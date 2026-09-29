@@ -1,0 +1,1438 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FloraGuide — Personal Gardening Assistant</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined">
+<!-- Three.js & OrbitControls for 3D Isometric Garden Digital Twin -->
+<script src="/js/three.min.js"></script>
+<script src="/js/OrbitControls.js"></script>
+<style>
+  :root {
+    --accent: #2e7d32;
+    --accent-light: #e8f5e9;
+    --accent-dark: #1b5e20;
+    --bg: #f4f6f8;
+    --card-bg: #ffffff;
+    --border: #d0d7de;
+    --text: #24292f;
+    --text-muted: #57606a;
+    --warn: #d97706;
+    --danger: #d32f2f;
+    --info: #0288d1;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+  }
+  header {
+    background: var(--accent);
+    color: #fff;
+    padding: 0.75rem 1.25rem;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+  }
+  header h1 { margin: 0; font-size: 1.2rem; display: flex; align-items: center; gap: 0.5rem; }
+  .badge { font-size: 0.75rem; padding: 0.2rem 0.5rem; border-radius: 12px; background: rgba(255,255,255,0.2); }
+  
+  nav {
+    display: flex;
+    background: #fff;
+    border-bottom: 1px solid var(--border);
+    overflow-x: auto;
+  }
+  nav button {
+    flex: 1;
+    padding: 0.8rem 1rem;
+    background: none;
+    border: none;
+    border-bottom: 3px solid transparent;
+    font-size: 0.95rem;
+    font-weight: 600;
+    color: var(--text-muted);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.4rem;
+    white-space: nowrap;
+  }
+  nav button.active {
+    color: var(--accent);
+    border-bottom-color: var(--accent);
+  }
+
+  main {
+    flex: 1;
+    overflow-y: auto;
+    padding: 1rem 1.25rem;
+    max-width: 1400px;
+    width: 100%;
+    margin: 0 auto;
+  }
+
+  #tab-today, #tab-journal, #tab-plans, #tab-assistant {
+    max-width: 900px;
+    margin: 0 auto;
+  }
+
+  .view-tab { display: none; }
+  .view-tab.active { display: block; }
+
+  /* Cards & Lists */
+  .card {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 1.1rem;
+    margin-bottom: 1rem;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+  }
+  .card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    margin-bottom: 0.6rem;
+  }
+  .card-title { margin: 0; font-size: 1.05rem; font-weight: 700; }
+  .card-sub { font-size: 0.85rem; color: var(--text-muted); margin-top: 0.2rem; }
+  .pill { font-size: 0.75rem; padding: 0.2rem 0.6rem; border-radius: 12px; font-weight: 600; }
+  .pill.urgent { background: #fee2e2; color: #991b1b; }
+  .pill.recommended { background: #fef3c7; color: #92400e; }
+  .pill.optional { background: #e0f2fe; color: #075985; }
+  .pill.sheltered { background: #ede9fe; color: #5b21b6; }
+  .pill.open { background: #dcfce7; color: #166534; }
+
+  .reason-box {
+    background: #f8fafc;
+    border-left: 3px solid var(--accent);
+    padding: 0.6rem 0.8rem;
+    font-size: 0.88rem;
+    margin: 0.6rem 0;
+    border-radius: 0 6px 6px 0;
+  }
+  .trigger-note {
+    font-size: 0.82rem;
+    color: var(--text-muted);
+    font-style: italic;
+  }
+
+  /* Weather strip */
+  .weather-banner {
+    background: linear-gradient(135deg, #e8f5e9 0%, #c8e6c9 100%);
+    border: 1px solid #a5d6a7;
+    border-radius: 10px;
+    padding: 1rem;
+    margin-bottom: 1.2rem;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.8rem;
+  }
+  .weather-temp { font-size: 1.8rem; font-weight: 800; color: var(--accent-dark); }
+  .stale-badge { background: #fef2f2; border: 1px solid #fecaca; color: #b91c1c; font-size: 0.75rem; padding: 0.2rem 0.5rem; border-radius: 4px; }
+
+  /* Plant Grid */
+  .plant-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    gap: 1rem;
+  }
+
+  /* Chat View */
+  #chat-container {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+  }
+  #log {
+    flex: 1;
+    overflow-y: auto;
+    padding: 0.5rem 0;
+  }
+  .msg { margin: 0.6rem 0; }
+  .msg.user { text-align: right; }
+  .bubble {
+    display: inline-block;
+    padding: 0.65rem 0.95rem;
+    border-radius: 12px;
+    background: #fff;
+    border: 1px solid var(--border);
+    text-align: left;
+    max-width: 90%;
+    white-space: pre-wrap;
+    font-size: 0.92rem;
+    line-height: 1.4;
+  }
+  .msg.user .bubble { background: var(--accent); color: #fff; border: none; }
+  .bubble.rich { background: transparent; border: none; padding: 0; max-width: 100%; white-space: normal; }
+
+  #chat-form {
+    display: flex;
+    gap: 0.5rem;
+    padding: 0.8rem 0;
+    border-top: 1px solid var(--border);
+  }
+  #chat-input {
+    flex: 1;
+    padding: 0.75rem;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    font-size: 0.95rem;
+  }
+  .btn {
+    padding: 0.55rem 0.95rem;
+    border: none;
+    border-radius: 6px;
+    background: var(--accent);
+    color: #fff;
+    font-weight: 600;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    font-size: 0.85rem;
+    transition: background 0.15s;
+  }
+  .btn:hover { background: var(--accent-dark); }
+  .btn-outline {
+    background: transparent;
+    border: 1px solid var(--accent);
+    color: var(--accent);
+  }
+  .btn-outline:hover { background: var(--accent-light); }
+
+  /* Quick action buttons */
+  .quick-bar {
+    display: flex;
+    gap: 0.5rem;
+    overflow-x: auto;
+    padding-bottom: 0.5rem;
+    margin-bottom: 0.8rem;
+  }
+  .quick-chip {
+    padding: 0.35rem 0.75rem;
+    background: #fff;
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    font-size: 0.82rem;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .quick-chip:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+
+  /* ========================================================
+     VISUAL GARDEN PLANNER STYLES
+     ======================================================== */
+  .segmented-control {
+    display: inline-flex;
+    background: #e2e8f0;
+    border-radius: 8px;
+    padding: 3px;
+    gap: 2px;
+  }
+  .segmented-control button {
+    border: none;
+    background: transparent;
+    padding: 0.35rem 0.75rem;
+    font-size: 0.8rem;
+    font-weight: 600;
+    border-radius: 6px;
+    color: var(--text-muted);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+    transition: all 0.15s;
+  }
+  .segmented-control button.active {
+    background: #ffffff;
+    color: var(--text);
+    box-shadow: 0 1px 3px rgba(0,0,0,0.12);
+  }
+
+  .garden-toolbar-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+    margin-bottom: 0.8rem;
+  }
+
+  .garden-filter-bar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+    margin-bottom: 0.8rem;
+  }
+
+  #garden-status-legend {
+    display: flex;
+    gap: 0.4rem;
+    overflow-x: auto;
+    align-items: center;
+    padding-bottom: 2px;
+  }
+  .legend-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.28rem 0.65rem;
+    border-radius: 20px;
+    font-size: 0.78rem;
+    font-weight: 600;
+    background: #ffffff;
+    border: 1px solid var(--border);
+    color: #475569;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: all 0.15s;
+  }
+  .legend-pill:hover { border-color: #94a3b8; }
+  .legend-pill.active {
+    background: #f1f5f9;
+    border-color: var(--pill-color, #2e7d32);
+    color: var(--text);
+    box-shadow: 0 0 0 1px var(--pill-color, #2e7d32);
+  }
+  .legend-dot { width: 8px; height: 8px; border-radius: 50%; }
+  .pill-icon { font-size: 0.95rem !important; }
+  .pill-badge {
+    font-size: 0.72rem;
+    padding: 0.05rem 0.4rem;
+    border-radius: 10px;
+    background: #e2e8f0;
+    margin-left: 0.15rem;
+  }
+
+  #garden-visual-workspace {
+    display: flex;
+    height: calc(100vh - 215px);
+    min-height: 580px;
+    background: #ffffff;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+    position: relative;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.05);
+  }
+
+  /* Left Library Drawer */
+  #garden-library-drawer {
+    width: 280px;
+    min-width: 280px;
+    background: #f8fafc;
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    transition: width 0.25s ease, min-width 0.25s ease;
+    position: relative;
+    z-index: 5;
+  }
+  #garden-library-drawer.collapsed {
+    width: 0;
+    min-width: 0;
+    overflow: hidden;
+    border-right: none;
+  }
+  .lib-header {
+    padding: 0.75rem 0.9rem;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    background: #ffffff;
+    font-weight: 700;
+    font-size: 0.88rem;
+  }
+  #garden-library-list {
+    flex: 1;
+    overflow-y: auto;
+    padding: 0.75rem;
+  }
+  .lib-group-title {
+    font-size: 0.72rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    margin-bottom: 0.45rem;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    letter-spacing: 0.5px;
+  }
+  .lib-count {
+    font-size: 0.72rem;
+    padding: 0.05rem 0.45rem;
+    border-radius: 10px;
+    background: #e2e8f0;
+    color: #475569;
+  }
+  .lib-count.highlight {
+    background: #fee2e2;
+    color: #b91c1c;
+    font-weight: 700;
+  }
+  .lib-empty {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    font-style: italic;
+    padding: 0.4rem 0.2rem;
+  }
+  .lib-plant-card {
+    background: #ffffff;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 0.55rem 0.7rem;
+    margin-bottom: 0.45rem;
+    display: flex;
+    align-items: center;
+    gap: 0.55rem;
+    cursor: grab;
+    user-select: none;
+    transition: transform 0.15s, box-shadow 0.15s, border-color 0.15s;
+  }
+  .lib-plant-card:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 2px 6px rgba(0,0,0,0.06);
+    border-color: #94a3b8;
+  }
+  .lib-plant-card.placed {
+    opacity: 0.88;
+    cursor: pointer;
+  }
+  .lib-plant-card.active-selection {
+    border-color: var(--accent);
+    background: var(--accent-light);
+  }
+  .lib-plant-card.touch-selected {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 2px var(--accent);
+    background: #f0fdf4;
+  }
+  .lib-plant-icon {
+    width: 34px;
+    height: 34px;
+    border-radius: 50%;
+    background: #f1f5f9;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.15rem;
+    border: 2px solid #22c55e;
+    flex-shrink: 0;
+  }
+  .lib-plant-info {
+    flex: 1;
+    min-width: 0;
+  }
+  .lib-plant-name {
+    font-weight: 600;
+    font-size: 0.85rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .lib-plant-sub {
+    font-size: 0.74rem;
+    color: var(--text-muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .lib-plant-status {
+    font-size: 0.72rem;
+    font-weight: 600;
+    margin-top: 0.15rem;
+    display: flex;
+    align-items: center;
+    gap: 0.2rem;
+  }
+  .status-mini-icon {
+    font-size: 0.85rem !important;
+  }
+  .lib-drag-handle {
+    color: #94a3b8;
+    font-size: 1.1rem;
+  }
+  .preset-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 0.35rem;
+    margin-top: 0.3rem;
+  }
+  .preset-chip {
+    background: #ffffff;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 0.35rem 0.45rem;
+    font-size: 0.74rem;
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+    cursor: grab;
+    user-select: none;
+    transition: all 0.15s;
+  }
+  .preset-chip:hover {
+    border-color: var(--accent);
+    background: #f8fafc;
+  }
+  .preset-chip.touch-selected {
+    border-color: var(--accent);
+    background: #f0fdf4;
+    box-shadow: 0 0 0 1px var(--accent);
+  }
+  .preset-emoji { font-size: 0.95rem; }
+  .preset-name {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-weight: 500;
+  }
+
+  /* Center Canvas Viewport */
+  #garden-canvas-container {
+    flex: 1;
+    position: relative;
+    background: #f8fafc;
+    overflow: hidden;
+    user-select: none;
+  }
+  #garden-canvas-2d {
+    width: 100%;
+    height: 100%;
+    display: block;
+    cursor: default;
+  }
+  #garden-canvas-3d-container {
+    width: 100%;
+    height: 100%;
+    display: none;
+  }
+
+  /* Floating Toolbars */
+  .canvas-toolbar {
+    position: absolute;
+    top: 12px;
+    left: 12px;
+    display: flex;
+    gap: 4px;
+    background: rgba(255,255,255,0.94);
+    backdrop-filter: blur(8px);
+    padding: 4px;
+    border-radius: 8px;
+    border: 1px solid rgba(0,0,0,0.1);
+    box-shadow: 0 2px 10px rgba(0,0,0,0.08);
+    z-index: 10;
+  }
+  .btn-tool {
+    width: 32px;
+    height: 32px;
+    border: none;
+    background: transparent;
+    border-radius: 6px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #475569;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .btn-tool:hover {
+    background: #f1f5f9;
+    color: var(--text);
+  }
+  .btn-tool.active {
+    background: var(--accent);
+    color: #ffffff;
+  }
+  .btn-tool:disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
+  }
+  .tool-sep {
+    width: 1px;
+    background: #cbd5e1;
+    margin: 4px 2px;
+  }
+
+  .canvas-nav-controls {
+    position: absolute;
+    bottom: 12px;
+    left: 12px;
+    display: flex;
+    gap: 4px;
+    background: rgba(255,255,255,0.94);
+    backdrop-filter: blur(8px);
+    padding: 4px;
+    border-radius: 8px;
+    border: 1px solid rgba(0,0,0,0.1);
+    box-shadow: 0 2px 10px rgba(0,0,0,0.08);
+    z-index: 10;
+  }
+
+  #auto-save-indicator {
+    position: absolute;
+    bottom: 12px;
+    right: 12px;
+    font-size: 0.75rem;
+    color: #64748b;
+    background: rgba(255,255,255,0.92);
+    backdrop-filter: blur(6px);
+    padding: 4px 10px;
+    border-radius: 12px;
+    border: 1px solid #e2e8f0;
+    pointer-events: none;
+    transition: opacity 0.4s;
+    opacity: 0.7;
+    z-index: 10;
+  }
+
+  /* Right Side Panel */
+  #garden-side-panel {
+    width: 330px;
+    min-width: 330px;
+    background: #ffffff;
+    border-left: 1px solid var(--border);
+    overflow-y: auto;
+    padding: 1rem;
+    display: none;
+    z-index: 5;
+  }
+  #garden-side-panel.open {
+    display: block;
+  }
+  .side-panel-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    margin-bottom: 0.8rem;
+    padding-bottom: 0.6rem;
+    border-bottom: 1px solid #f1f5f9;
+  }
+  .side-title { font-size: 1.15rem; font-weight: 700; }
+  .side-sub { font-size: 0.8rem; color: var(--text-muted); margin-top: 0.15rem; }
+  .side-close-btn {
+    background: none;
+    border: none;
+    font-size: 1.1rem;
+    color: var(--text-muted);
+    cursor: pointer;
+    padding: 2px 6px;
+    border-radius: 4px;
+  }
+  .side-close-btn:hover { background: #f1f5f9; }
+  .side-section { margin-bottom: 1rem; }
+  .side-label {
+    font-size: 0.72rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    margin-bottom: 0.35rem;
+    letter-spacing: 0.5px;
+  }
+  .side-condition-card {
+    background: #f8fafc;
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+    padding: 0.75rem;
+  }
+  .side-action-box {
+    display: flex;
+    gap: 0.5rem;
+    align-items: flex-start;
+    background: #f0fdf4;
+    border: 1px solid #bbf7d0;
+    border-radius: 6px;
+    padding: 0.6rem 0.75rem;
+    font-size: 0.85rem;
+    color: #166534;
+    line-height: 1.4;
+  }
+  .side-meta-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 0.82rem;
+    margin-bottom: 0.45rem;
+  }
+  .side-obs-card {
+    background: #f8fafc;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 0.6rem;
+    margin-top: 0.3rem;
+  }
+  .side-sub-note {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    font-style: italic;
+  }
+  .btn-action {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.4rem;
+    padding: 0.6rem;
+    font-size: 0.85rem;
+    border-radius: 6px;
+    background: #0288d1;
+    color: #fff;
+    border: none;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.15s;
+  }
+  .btn-action:hover { background: #0277bd; }
+  .btn-danger-outline {
+    background: transparent;
+    border: 1px solid #ef4444;
+    color: #ef4444;
+    width: 100%;
+    cursor: pointer;
+    padding: 0.45rem;
+    border-radius: 6px;
+    font-weight: 600;
+    transition: background 0.15s;
+  }
+  .btn-danger-outline:hover { background: #fee2e2; }
+
+  /* Modal Dialogs */
+  .modal-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0,0,0,0.5);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+    backdrop-filter: blur(2px);
+  }
+  .modal-dialog {
+    background: #ffffff;
+    border-radius: 12px;
+    width: 90%;
+    max-width: 480px;
+    box-shadow: 0 10px 25px rgba(0,0,0,0.2);
+    overflow: hidden;
+    animation: modalPop 0.2s ease-out;
+  }
+  @keyframes modalPop {
+    from { transform: scale(0.95); opacity: 0; }
+    to { transform: scale(1); opacity: 1; }
+  }
+  .modal-header {
+    padding: 1rem 1.25rem;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .modal-body {
+    padding: 1.25rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.85rem;
+  }
+  .modal-footer {
+    padding: 0.9rem 1.25rem;
+    border-top: 1px solid var(--border);
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.5rem;
+    background: #f8fafc;
+  }
+  .form-group {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+  }
+  .form-group label {
+    font-size: 0.8rem;
+    font-weight: 600;
+  }
+  .form-group input, .form-group select {
+    padding: 0.55rem;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font-size: 0.88rem;
+  }
+
+  /* Toast Notification */
+  .garden-toast {
+    position: fixed;
+    bottom: 24px;
+    left: 50%;
+    transform: translateX(-50%) translateY(100px);
+    background: #1e293b;
+    color: #ffffff;
+    padding: 0.65rem 1.25rem;
+    border-radius: 30px;
+    font-size: 0.85rem;
+    font-weight: 500;
+    box-shadow: 0 4px 14px rgba(0,0,0,0.25);
+    z-index: 2000;
+    opacity: 0;
+    transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+    pointer-events: none;
+  }
+  .garden-toast.show {
+    transform: translateX(-50%) translateY(0);
+    opacity: 1;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1><span class="material-symbols-outlined">psychiatry</span> FloraGuide</h1>
+  <span class="badge" id="garden-label">Home Garden (San Francisco)</span>
+</header>
+
+<nav>
+  <button class="active" onclick="showTab('today', this)"><span class="material-symbols-outlined">wb_sunny</span> Today</button>
+  <button onclick="showTab('garden', this)"><span class="material-symbols-outlined">yard</span> My Garden</button>
+  <button onclick="showTab('journal', this)"><span class="material-symbols-outlined">menu_book</span> Journal</button>
+  <button onclick="showTab('plans', this)"><span class="material-symbols-outlined">event_note</span> Plans</button>
+  <button onclick="showTab('assistant', this)"><span class="material-symbols-outlined">smart_toy</span> Assistant</button>
+</nav>
+
+<main>
+  <!-- TAB: TODAY -->
+  <div id="tab-today" class="view-tab active">
+    <div id="today-weather" class="weather-banner">
+      <div>
+        <div style="font-weight: 600; font-size: 0.9rem;">Local Weather Conditions</div>
+        <div id="weather-desc" style="font-size: 0.85rem; color: var(--text-muted); margin-top: 0.2rem;">Checking environmental data...</div>
+      </div>
+      <div id="weather-temp" class="weather-temp">--°F</div>
+    </div>
+
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.8rem;">
+      <h2 style="margin: 0; font-size: 1.1rem;">Recommended Actions & Inspections</h2>
+      <button class="btn btn-outline" style="font-size: 0.8rem;" onclick="generateFreshPlan()">Refresh Care Plan</button>
+    </div>
+    <div id="today-tasks">Loading tasks...</div>
+  </div>
+
+  <!-- TAB: MY GARDEN (Visual Digital Twin Workspace + Classic List Switch) -->
+  <div id="tab-garden" class="view-tab">
+    <!-- Garden Controls Header -->
+    <div class="garden-toolbar-header">
+      <div style="display: flex; align-items: center; gap: 0.8rem; flex-wrap: wrap;">
+        <h2 style="margin: 0; font-size: 1.15rem; font-weight: 700;">Garden Planner & Digital Twin</h2>
+
+        <!-- Visual / List Switch -->
+        <div class="segmented-control">
+          <button id="btn-mode-visual" class="active" title="Spatial visual twin of your garden">
+            <span class="material-symbols-outlined" style="font-size:1rem;">grid_view</span> Visual
+          </button>
+          <button id="btn-mode-list" title="Detailed plant cards and area list">
+            <span class="material-symbols-outlined" style="font-size:1rem;">view_list</span> List
+          </button>
+        </div>
+
+        <!-- 2D / 3D Switch -->
+        <div class="segmented-control">
+          <button id="btn-dim-2d" class="active" title="2D Top-down editing canvas">
+            <span class="material-symbols-outlined" style="font-size:1rem;">layers</span> 2D Top
+          </button>
+          <button id="btn-dim-3d" title="3D Isometric interactive WebGL scene">
+            <span class="material-symbols-outlined" style="font-size:1rem;">deployed_code</span> 3D Iso
+          </button>
+        </div>
+
+        <!-- Explore / Edit Switch -->
+        <div class="segmented-control">
+          <button id="btn-mode-edit" class="active" title="Draw areas and reposition plants">
+            <span class="material-symbols-outlined" style="font-size:1rem;">draw</span> Edit
+          </button>
+          <button id="btn-mode-explore" title="Browse and inspect plant health">
+            <span class="material-symbols-outlined" style="font-size:1rem;">explore</span> Explore
+          </button>
+        </div>
+      </div>
+
+      <div style="display: flex; gap: 0.5rem; align-items: center;">
+        <button id="btn-toggle-library" class="btn btn-outline" title="Toggle plant library drawer">
+          <span class="material-symbols-outlined" style="font-size:1rem;">local_florist</span> Plant Library
+        </button>
+        <button id="btn-add-area-dialog" class="btn" title="Create a new growing area on canvas">
+          <span class="material-symbols-outlined" style="font-size:1rem;">add_box</span> Add Area
+        </button>
+        <button class="btn btn-outline" onclick="openAddPlantDialog()" title="Add plant profile">
+          <span class="material-symbols-outlined" style="font-size:1rem;">add</span> Add Plant
+        </button>
+      </div>
+    </div>
+
+    <!-- Filter & Health Status Ribbon -->
+    <div class="garden-filter-bar">
+      <div id="garden-status-legend"></div>
+      <div style="display: flex; align-items: center; gap: 0.5rem;">
+        <select id="filter-area-select" style="padding: 0.35rem 0.6rem; border: 1px solid var(--border); border-radius: 6px; font-size: 0.8rem; background: #fff;">
+          <option value="all">All Growing Areas</option>
+        </select>
+      </div>
+    </div>
+
+    <!-- Visual Digital Twin Workspace -->
+    <div id="garden-visual-workspace">
+      <!-- Left Collapsible Library Drawer -->
+      <div id="garden-library-drawer">
+        <div class="lib-header">
+          <span>Plant Library</span>
+          <span style="font-size:0.75rem; color:var(--text-muted); font-weight:normal;">Drag to plant</span>
+        </div>
+        <div id="garden-library-list"></div>
+      </div>
+
+      <!-- Center Canvas Viewport -->
+      <div id="garden-canvas-container">
+        <!-- 2D Canvas Toolbar -->
+        <div class="canvas-toolbar">
+          <button id="btn-tool-select" class="btn-tool active" title="Select and Move (S)">
+            <span class="material-symbols-outlined" style="font-size:1.1rem;">pan_tool</span>
+          </button>
+          <button id="btn-tool-freehand" class="btn-tool tool-2d-only" title="Freehand Outline with Curve Smoothing">
+            <span class="material-symbols-outlined" style="font-size:1.1rem;">gesture</span>
+          </button>
+          <button id="btn-tool-rect" class="btn-tool tool-2d-only" title="Draw Rectangle Area">
+            <span class="material-symbols-outlined" style="font-size:1.1rem;">crop_square</span>
+          </button>
+          <button id="btn-tool-polygon" class="btn-tool tool-2d-only" title="Draw Multi-point Polygon Area">
+            <span class="material-symbols-outlined" style="font-size:1.1rem;">polyline</span>
+          </button>
+
+          <div class="tool-sep"></div>
+
+          <button id="btn-tool-undo" class="btn-tool" title="Undo (Ctrl+Z)" disabled>
+            <span class="material-symbols-outlined" style="font-size:1.1rem;">undo</span>
+          </button>
+          <button id="btn-tool-redo" class="btn-tool" title="Redo (Ctrl+Y)" disabled>
+            <span class="material-symbols-outlined" style="font-size:1.1rem;">redo</span>
+          </button>
+        </div>
+
+        <!-- 2D Canvas -->
+        <canvas id="garden-canvas-2d"></canvas>
+
+        <!-- 3D Three.js WebGL Container -->
+        <div id="garden-canvas-3d-container"></div>
+
+        <!-- Bottom Left Navigation Controls -->
+        <div class="canvas-nav-controls">
+          <button id="btn-zoom-in" class="btn-tool" title="Zoom In (+)">
+            <span class="material-symbols-outlined" style="font-size:1.1rem;">zoom_in</span>
+          </button>
+          <button id="btn-zoom-out" class="btn-tool" title="Zoom Out (-)">
+            <span class="material-symbols-outlined" style="font-size:1.1rem;">zoom_out</span>
+          </button>
+          <button id="btn-fit-garden" class="btn-tool" title="Fit to Garden View">
+            <span class="material-symbols-outlined" style="font-size:1.1rem;">filter_center_focus</span>
+          </button>
+          <button id="btn-rotate-left" class="btn-tool" title="Rotate 3D Left (-45°)">
+            <span class="material-symbols-outlined" style="font-size:1.1rem;">rotate_left</span>
+          </button>
+          <button id="btn-rotate-right" class="btn-tool" title="Rotate 3D Right (+45°)">
+            <span class="material-symbols-outlined" style="font-size:1.1rem;">rotate_right</span>
+          </button>
+        </div>
+
+        <!-- Auto-save notification pill -->
+        <div id="auto-save-indicator">Layout synced</div>
+      </div>
+
+      <!-- Right Inspection / Side Panel -->
+      <div id="garden-side-panel"></div>
+    </div>
+
+    <!-- Classic List View (Active when List is toggled) -->
+    <div id="garden-list-view" style="display: none; margin-top: 1rem;">
+      <div id="garden-areas"></div>
+      <div class="plant-grid" id="plants-list"></div>
+    </div>
+  </div>
+
+  <!-- TAB: JOURNAL -->
+  <div id="tab-journal" class="view-tab">
+    <div class="card">
+      <h3 style="margin-top: 0; font-size: 1rem;">Log New Observation or Care Event</h3>
+      <div style="display: flex; gap: 0.5rem; margin-bottom: 0.5rem; flex-wrap: wrap;">
+        <input id="obs-notes" placeholder="e.g. soil still feels damp at 2 inches, or pruned dead basil tops" style="flex: 1; padding: 0.6rem; border: 1px solid var(--border); border-radius: 6px;">
+        <select id="obs-category" style="padding: 0.6rem; border: 1px solid var(--border); border-radius: 6px;">
+          <option value="watering">Watering / Moisture</option>
+          <option value="fertilizing">Fertilizing</option>
+          <option value="pruning">Pruning</option>
+          <option value="symptom">Symptom / Health</option>
+          <option value="general">General</option>
+        </select>
+        <button class="btn" onclick="submitObservation()">Log Entry</button>
+      </div>
+      <div style="font-size: 0.8rem; color: var(--text-muted);">Real observations update the assistant's care plans immediately (e.g. damp soil defers watering).</div>
+    </div>
+
+    <h2 style="font-size: 1.1rem; margin-bottom: 0.8rem;">Timeline & History</h2>
+    <div id="journal-timeline">Loading journal...</div>
+  </div>
+
+  <!-- TAB: PLANS -->
+  <div id="tab-plans" class="view-tab">
+    <div class="card" style="border-left: 4px solid var(--info);">
+      <h3 style="margin-top: 0; font-size: 1rem;">Prepare for Travel / Absence</h3>
+      <p style="font-size: 0.85rem; color: var(--text-muted);">Going away? Let FloraGuide tailor an absence plan so your plants survive without being blindly overwatered.</p>
+      <div style="display: flex; gap: 0.6rem; flex-wrap: wrap; margin-bottom: 0.6rem;">
+        <div>
+          <label style="font-size: 0.75rem; font-weight: 600;">Departure Date</label><br>
+          <input type="date" id="travel-depart" style="padding: 0.4rem; border: 1px solid var(--border); border-radius: 4px;">
+        </div>
+        <div>
+          <label style="font-size: 0.75rem; font-weight: 600;">Return Date</label><br>
+          <input type="date" id="travel-return" style="padding: 0.4rem; border: 1px solid var(--border); border-radius: 4px;">
+        </div>
+        <div>
+          <label style="font-size: 0.75rem; font-weight: 600;">Help Available</label><br>
+          <input type="text" id="travel-help" placeholder="e.g. None or Neighbor" style="padding: 0.4rem; border: 1px solid var(--border); border-radius: 4px;">
+        </div>
+        <div style="display: flex; align-items: flex-end;">
+          <button class="btn" onclick="generateTravelPlan()">Generate Absence Plan</button>
+        </div>
+      </div>
+    </div>
+    <div id="travel-plan-results"></div>
+  </div>
+
+  <!-- TAB: ASSISTANT -->
+  <div id="tab-assistant" class="view-tab">
+    <div class="quick-bar">
+      <span class="quick-chip" onclick="sendQuickPrompt('What should I do in my garden today?')">Today's priorities</span>
+      <span class="quick-chip" onclick="sendQuickPrompt('Why is soil moisture so important for my sheltered pots?')">Sheltered pots vs rain</span>
+      <span class="quick-chip" onclick="sendQuickPrompt('I am going away for three days. How should I prepare my plants?')">3-day travel prep</span>
+      <span class="quick-chip" onclick="sendQuickPrompt('Check local weather and alert me of any frost or heat risks.')">Environmental check</span>
+    </div>
+
+    <div id="chat-container">
+      <div id="log"></div>
+      <form id="chat-form" onsubmit="event.preventDefault(); sendChat();">
+        <input id="chat-input" placeholder="Ask FloraGuide about your garden, care plans, or conditions…" autocomplete="off">
+        <button class="btn">Send</button>
+      </form>
+    </div>
+  </div>
+</main>
+
+<!-- Area Creation Modal -->
+<div id="modal-area-create" class="modal-overlay">
+  <div class="modal-dialog">
+    <div class="modal-header">
+      <h3 style="margin:0; font-size:1.05rem;">Define Growing Area</h3>
+      <button class="side-close-btn" onclick="window.gardenPlanner.closeAreaModal()">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-group">
+        <label>Area Name</label>
+        <input id="area-form-name" placeholder="e.g. South Terrace, Front Raised Bed">
+      </div>
+      <div class="form-group">
+        <label>Area Type</label>
+        <select id="area-form-type">
+          <option value="raised bed">Raised Bed (Wood/Timber framing)</option>
+          <option value="balcony">Balcony / Deck (Plank decking)</option>
+          <option value="patio">Patio (Stone pavers)</option>
+          <option value="lawn">Lawn Border (Turf & soil)</option>
+          <option value="greenhouse">Greenhouse / Cold Frame</option>
+          <option value="in-ground">In-Ground Garden Bed</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Sun Exposure</label>
+        <select id="area-form-sun">
+          <option value="full sun">Full Sun (6+ hours direct light)</option>
+          <option value="partial sun">Partial Sun / Partial Shade (3-6 hours)</option>
+          <option value="full shade">Full Shade (Deep indirect light)</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Rain Exposure / Micro-Climate</label>
+        <select id="area-form-shelter">
+          <option value="0">Open to Sky (Receives natural rainfall)</option>
+          <option value="1">Sheltered by Overhang/Awning (Zero direct rain)</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Watering Arrangement</label>
+        <input id="area-form-watering" placeholder="e.g. Manual watering can, drip irrigation">
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-outline" onclick="window.gardenPlanner.closeAreaModal()">Cancel</button>
+      <button class="btn" onclick="window.gardenPlanner.submitNewArea()">Save Growing Area</button>
+    </div>
+  </div>
+</div>
+
+<!-- Plant Creation Modal -->
+<div id="modal-plant-create" class="modal-overlay">
+  <div class="modal-dialog">
+    <div class="modal-header">
+      <h3 style="margin:0; font-size:1.05rem;">Add New Plant</h3>
+      <button class="side-close-btn" onclick="closeAddPlantDialog()">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-group">
+        <label>Plant Common Name</label>
+        <input id="plant-form-name" placeholder="e.g. Sweet Basil, English Lavender">
+      </div>
+      <div class="form-group">
+        <label>Botanical Species (Optional)</label>
+        <input id="plant-form-species" placeholder="e.g. Ocimum basilicum">
+      </div>
+      <div class="form-group">
+        <label>Growing Area</label>
+        <select id="plant-form-area"></select>
+      </div>
+      <div class="form-group">
+        <label>Planting Type</label>
+        <select id="plant-form-planting-type">
+          <option value="container">Container / Pot</option>
+          <option value="ground">Directly In-Ground</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Pot Size (Liters, if in container)</label>
+        <input type="number" id="plant-form-liters" value="5" step="0.5">
+      </div>
+      <div class="form-group">
+        <label>Substrate / Soil Type</label>
+        <input id="plant-form-substrate" value="potting mix">
+      </div>
+      <div class="form-group">
+        <label>Drainage Quality</label>
+        <select id="plant-form-drainage">
+          <option value="good">Good</option>
+          <option value="excellent">Excellent</option>
+          <option value="moderate">Moderate</option>
+          <option value="poor">Poor</option>
+        </select>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-outline" onclick="closeAddPlantDialog()">Cancel</button>
+      <button class="btn" onclick="submitNewPlant()">Save Plant</button>
+    </div>
+  </div>
+</div>
+
+<!-- Garden Planner JavaScript Engine -->
+<script src="/garden_planner.js"></script>
+
+<script>
+// --- Navigation ---
+function showTab(tabName, btn) {
+  document.querySelectorAll('.view-tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('nav button').forEach(b => b.classList.remove('active'));
+  document.getElementById('tab-' + tabName).classList.add('active');
+  if (btn) btn.classList.add('active');
+  if (tabName === 'today') loadToday();
+  if (tabName === 'garden') loadGarden();
+  if (tabName === 'journal') loadJournal();
+}
+
+// --- API Helpers ---
+async function fetchJSON(url) {
+  try {
+    const res = await fetch(url);
+    return await res.json();
+  } catch (e) {
+    console.error("API error:", e);
+    return null;
+  }
+}
+
+// --- View: Today ---
+async function loadToday() {
+  const weather = await fetchJSON('/api/weather');
+  if (weather && weather.current) {
+    document.getElementById('weather-temp').textContent = Math.round(weather.current.temperature_f) + '°F';
+    const staleNote = weather.is_stale ? `<span class="stale-badge">Stale (${weather.data_age_hours}h old)</span> ` : '';
+    const rain = (weather.forecast_days && weather.forecast_days[0]) ? weather.forecast_days[0].precipitation_sum_mm : 0;
+    document.getElementById('weather-desc').innerHTML = `${staleNote}Forecast: ${weather.forecast_days ? weather.forecast_days[0].temp_max_c : 20}°C / Rain: ${rain}mm · ${weather.source}`;
+  }
+
+  const tasksData = await fetchJSON('/api/tasks');
+  const container = document.getElementById('today-tasks');
+  if (!tasksData || !tasksData.tasks || tasksData.tasks.length === 0) {
+    container.innerHTML = `<div class="card"><p style="color:var(--text-muted); margin:0;">No urgent tasks pending. Click "Refresh Care Plan" to evaluate latest weather & observations.</p></div>`;
+    return;
+  }
+
+  container.innerHTML = tasksData.tasks.map(t => `
+    <div class="card">
+      <div class="card-header">
+        <div>
+          <div class="card-title">${t.action.toUpperCase()} — ${t.plant_name || 'Garden'}</div>
+          <div class="card-sub">Due: ${t.due_date} · Status: <strong>${t.status}</strong></div>
+        </div>
+        <div>
+          <span class="pill ${t.priority}">${t.priority.toUpperCase()}</span>
+          ${t.completed ? '' : `<button class="btn btn-outline" style="font-size:0.75rem; padding:0.25rem 0.5rem; margin-left:0.5rem;" onclick="completeTask('${t.id}')">Done</button>`}
+        </div>
+      </div>
+      <p style="margin: 0.4rem 0; font-size: 0.92rem;">${t.description}</p>
+      <div class="reason-box"><strong>Why:</strong> ${t.evidence_reason}</div>
+      ${t.condition_trigger ? `<div class="trigger-note"><strong>Condition check:</strong> ${t.condition_trigger}</div>` : ''}
+    </div>
+  `).join('');
+}
+
+async function completeTask(taskId) {
+  await fetch(`/api/tasks/${taskId}/complete`, { method: 'POST' });
+  await loadToday();
+}
+
+async function generateFreshPlan() {
+  const container = document.getElementById('today-tasks');
+  container.innerHTML = `<div class="card">Evaluating environmental rules and plant history...</div>`;
+  await fetch('/api/plan/generate', { method: 'POST' });
+  await loadToday();
+}
+
+// --- View: My Garden ---
+async function loadGarden() {
+  if (window.gardenPlanner) {
+    await window.gardenPlanner.loadGardenData();
+  }
+}
+
+function openAddPlantDialog() {
+  const modal = document.getElementById('modal-plant-create');
+  const select = document.getElementById('plant-form-area');
+  if (window.gardenPlanner && window.gardenPlanner.growingAreas) {
+    select.innerHTML = window.gardenPlanner.growingAreas.map(a => `<option value="${a.id}">${a.name} (${a.area_type})</option>`).join('');
+  }
+  if (modal) modal.style.display = 'flex';
+}
+
+function closeAddPlantDialog() {
+  const modal = document.getElementById('modal-plant-create');
+  if (modal) modal.style.display = 'none';
+}
+
+async function submitNewPlant() {
+  const name = document.getElementById('plant-form-name').value.trim();
+  const species = document.getElementById('plant-form-species').value.trim();
+  const areaId = document.getElementById('plant-form-area').value;
+  const plantingType = document.getElementById('plant-form-planting-type').value;
+  const liters = parseFloat(document.getElementById('plant-form-liters').value) || null;
+  const substrate = document.getElementById('plant-form-substrate').value.trim();
+  const drainage = document.getElementById('plant-form-drainage').value;
+
+  if (!name) {
+    alert("Please enter a plant name.");
+    return;
+  }
+
+  try {
+    const res = await fetch('/api/plants', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name,
+        species,
+        area_id: areaId,
+        planting_type: plantingType,
+        container_size_liters: liters,
+        substrate_type: substrate,
+        drainage_quality: drainage
+      })
+    });
+    const data = await res.json();
+    if (data.plant) {
+      closeAddPlantDialog();
+      await loadGarden();
+      if (window.gardenPlanner) {
+        window.gardenPlanner.showToast(`Added ${name} to garden!`);
+      }
+    }
+  } catch (err) {
+    console.error("Failed to add plant:", err);
+  }
+}
+
+// --- View: Journal ---
+async function loadJournal() {
+  const data = await fetchJSON('/api/journal');
+  const container = document.getElementById('journal-timeline');
+  if (!data || !data.entries || data.entries.length === 0) {
+    container.innerHTML = `<div class="card">No journal observations yet.</div>`;
+    return;
+  }
+  container.innerHTML = data.entries.map(e => `
+    <div class="card" style="margin-bottom:0.75rem;">
+      <div style="display:flex; justify-content:space-between; font-size:0.78rem; color:var(--text-muted);">
+        <span><strong>${e.plant_name ? e.plant_name : 'General Observation'}</strong> · <span style="text-transform:uppercase;">${e.category}</span></span>
+        <span>${new Date(e.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</span>
+      </div>
+      <div style="margin-top:0.4rem; font-size:0.92rem;">${e.notes}</div>
+    </div>
+  `).join('');
+}
+
+async function submitObservation() {
+  const notes = document.getElementById('obs-notes').value.trim();
+  const category = document.getElementById('obs-category').value;
+  if (!notes) return;
+  await fetch('/api/journal', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ notes: notes, category: category })
+  });
+  document.getElementById('obs-notes').value = '';
+  await loadJournal();
+}
+
+// --- View: Travel Plans ---
+async function generateTravelPlan() {
+  const depart = document.getElementById('travel-depart').value;
+  const ret = document.getElementById('travel-return').value;
+  const help = document.getElementById('travel-help').value;
+  const container = document.getElementById('travel-plan-results');
+
+  container.innerHTML = `<div class="card">Simulating temperature, humidity, and micro-climate stress for each plant...</div>`;
+
+  const res = await fetch('/api/plan/travel', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ departure_date: depart, return_date: ret, caregiver_instructions: help })
+  });
+  const data = await res.json();
+  const plan = data.travel_plan;
+
+  container.innerHTML = `
+    <div class="card">
+      <div class="card-header">
+        <div>
+          <div class="card-title">Tailored Travel Care Plan (${plan.duration_days} Days)</div>
+          <div class="card-sub">${depart} to ${ret}</div>
+        </div>
+        <span class="pill recommended">Caregiver: ${plan.caregiver_available ? 'Available' : 'None'}</span>
+      </div>
+
+      <div style="margin: 0.8rem 0;">
+        <strong>1. Plant Risk Assessment:</strong>
+        <div style="margin-top:0.4rem;">
+          ${(plan.high_risk_plants || []).map(p => `
+            <div style="color:var(--danger); font-size:0.88rem; margin:0.2rem 0;">🔴 <strong>${p.name}</strong> (${p.area}): ${p.reason}</div>
+          `).join('')}
+          ${(plan.moderate_risk_plants || []).map(p => `
+            <div style="color:#b45309; font-size:0.88rem; margin:0.2rem 0;">🟡 <strong>${p.name}</strong> (Moderate Risk): ${p.reason}</div>
+          `).join('')}
+        </div>
+      </div>
+
+      <div style="margin: 0.8rem 0;">
+        <strong>2. Pre-Departure Checklist:</strong>
+        <ul style="font-size:0.88rem; margin:0.3rem 0; padding-left:1.2rem;">
+          ${(plan.preparation_checklist || []).map(c => `<li>${c}</li>`).join('')}
+        </ul>
+      </div>
+
+      <div style="margin: 0.8rem 0;">
+        <strong>3. Absence Mitigation:</strong>
+        <ul style="font-size:0.88rem; margin:0.3rem 0; padding-left:1.2rem;">
+          ${(plan.absence_mitigation || []).map(m => `<li>${m}</li>`).join('')}
+        </ul>
+      </div>
+
+      <div style="margin: 0.8rem 0;">
+        <strong>4. Return Inspection:</strong>
+        <ul style="font-size:0.88rem; margin:0.3rem 0; padding-left:1.2rem;">
+          ${(plan.return_inspection || []).map(r => `<li>${r}</li>`).join('')}
+        </ul>
+      </div>
+    </div>
+  `;
+}
+
+// --- View: Chat Assistant ---
+function appendMsg(text, who, isRich=false) {
+  const log = document.getElementById("log");
+  const m = document.createElement("div");
+  m.className = "msg " + who;
+  const b = document.createElement("div");
+  b.className = "bubble" + (isRich ? " rich" : "");
+  b.textContent = text;
+  m.appendChild(b);
+  log.appendChild(m);
+  log.scrollTop = log.scrollHeight;
+  return b;
+}
+
+async function sendChat(customText) {
+  const input = document.getElementById("chat-input");
+  const text = customText || input.value.trim();
+  if (!text) return;
+  input.value = "";
+  appendMsg(text, "user");
+  const botBubble = appendMsg("FloraGuide is thinking…", "bot");
+
+  try {
+    const res = await fetch("/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: text })
+    });
+    const data = await res.json();
+    if (data.parts && data.parts.length > 0) {
+      botBubble.textContent = data.parts.map(p => p.text || "").join("\n\n");
+    } else {
+      botBubble.textContent = data.reply || "Done.";
+    }
+  } catch (err) {
+    botBubble.textContent = "Error communicating with FloraGuide: " + err.message;
+  }
+}
+
+function sendQuickPrompt(promptText) {
+  showTab('assistant', document.querySelectorAll('nav button')[4]);
+  sendChat(promptText);
+}
+
+// Set up dates
+const d = new Date();
+d.setDate(d.getDate() + 1);
+document.getElementById('travel-depart').value = d.toISOString().split('T')[0];
+d.setDate(d.getDate() + 3);
+document.getElementById('travel-return').value = d.toISOString().split('T')[0];
+
+// Initialize Planner & load data
+window.addEventListener('DOMContentLoaded', () => {
+  if (window.gardenPlanner) {
+    window.gardenPlanner.init();
+  }
+  loadToday();
+});
+</script>
+</body>
+</html>
