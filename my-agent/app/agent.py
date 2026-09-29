@@ -4,6 +4,13 @@ Equipped with garden & plant profiles, real weather forecasting with staleness a
 observation timeline journaling, conditional care planning, and travel absence preparation.
 """
 
+import os
+# Prevent google-genai from misidentifying Google Maps API key as Gemini API key on Vertex AI
+if "GOOGLE_API_KEY" in os.environ and os.environ.get("GOOGLE_GENAI_USE_VERTEXAI") == "true":
+    if not os.environ.get("GOOGLE_MAPS_API_KEY"):
+        os.environ["GOOGLE_MAPS_API_KEY"] = os.environ["GOOGLE_API_KEY"]
+    os.environ.pop("GOOGLE_API_KEY", None)
+
 from google.adk.agents import Agent
 from google.adk.agents.callback_context import CallbackContext
 from google.adk.code_executors import AgentEngineSandboxCodeExecutor
@@ -71,6 +78,7 @@ TOOLS AT YOUR DISPOSAL:
 - list_garden_plants_firestore: Retrieve plants stored in Cloud Firestore.
 - geocode_address: Turn an address, city, or postal code into latitude and longitude coordinates.
 - find_nearby_places: Find nearby garden centers, nurseries, florists, parks, or supply stores.
+- generate_plant_video: Generate short botanical / plant care videos (time-lapse growth, pruning demo, morning bloom) using Google's Omni model (gemini-omni-flash-preview) in the global region.
 """
 
 schema_manager = A2uiSchemaManager(
@@ -123,6 +131,7 @@ root_agent = Agent(
         tools.get_daylight_and_photoperiod,
         tools.geocode_address,
         tools.find_nearby_places,
+        tools.generate_plant_video,
     ],
     code_executor=sandbox_code_executor,
     after_agent_callback=generate_memories_callback,

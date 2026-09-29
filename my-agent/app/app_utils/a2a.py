@@ -26,12 +26,20 @@ import os
 from typing import TYPE_CHECKING
 
 from a2a.server.request_handlers import DefaultRequestHandler
-from a2a.server.routes import (
-    add_a2a_routes_to_fastapi,
-    create_agent_card_routes,
-    create_jsonrpc_routes,
-)
-from a2a.server.routes.common import DefaultServerCallContextBuilder
+
+try:
+    from a2a.server.routes import (
+        add_a2a_routes_to_fastapi,
+        create_agent_card_routes,
+        create_jsonrpc_routes,
+    )
+    from a2a.server.routes.common import DefaultServerCallContextBuilder as _BaseServerCallContextBuilder
+    _IS_A2A_V1 = True
+except ImportError:
+    from a2a.server.apps import A2AStarletteApplication
+    from a2a.server.apps.jsonrpc.jsonrpc_app import DefaultCallContextBuilder as _BaseServerCallContextBuilder
+    _IS_A2A_V1 = False
+
 from a2a.server.tasks import TaskStore
 from a2a.types import AgentCapabilities, AgentCard, AgentExtension, AgentInterface
 from a2a.utils.constants import AGENT_CARD_WELL_KNOWN_PATH
@@ -39,7 +47,7 @@ from google.adk.a2a.executor.a2a_agent_executor import A2aAgentExecutor
 from google.adk.a2a.utils.agent_card_builder import AgentCardBuilder
 
 
-class _A2AServerCallContextBuilder(DefaultServerCallContextBuilder):
+class _A2AServerCallContextBuilder(_BaseServerCallContextBuilder):
     """Context builder that ensures A2A-Version defaults correctly when missing.
 
     Proxy infrastructure (e.g. Google Cloud API Gateways) can strip custom HTTP headers
@@ -90,7 +98,7 @@ async def _add_v0_3_compat_interface(card: AgentCard) -> AgentCard:
     """Advertise a v0.3 JSON-RPC interface so the served card stays consumable by
     v0.3 A2A clients — notably Gemini Enterprise registration, whose validator
     still requires the 0.3 card shape (top-level ``url``/``protocolVersion``)."""
-    if card.supported_interfaces:
+    if hasattr(card, "supported_interfaces") and card.supported_interfaces:
         card.supported_interfaces.append(
             AgentInterface(
                 protocol_binding="JSONRPC",
@@ -173,23 +181,42 @@ async def attach_a2a_routes(
         agent_version=resolved_agent_version,
     ).build()
 
-    request_handler = DefaultRequestHandler(
-        agent_executor=A2aAgentExecutor(runner=runner),
-        task_store=task_store,
-        agent_card=agent_card,
-    )
+    if _IS_A2A_V1:
+        request_handler = DefaultRequestHandler(
+            agent_executor=A2aAgentExecutor(runner=runner),
+            task_store=task_store,
+            agent_card=agent_card,
+        )
 
-    add_a2a_routes_to_fastapi(
-        app,
-        agent_card_routes=create_agent_card_routes(
-            agent_card,
+        add_a2a_routes_to_fastapi(
+            app,
+            agent_card_routes=create_agent_card_routes(
+                agent_card,
+                card_modifier=_add_v0_3_compat_interface,
+                card_url=f"{rpc_path}{AGENT_CARD_WELL_KNOWN_PATH}",
+            ),
+            jsonrpc_routes=create_jsonrpc_routes(
+                request_handler,
+                rpc_url=rpc_path,
+                context_builder=_A2AServerCallContextBuilder(),
+                enable_v0_3_compat=True,
+            ),
+        )
+    else:
+        request_handler = DefaultRequestHandler(
+            agent_executor=A2aAgentExecutor(runner=runner),
+            task_store=task_store,
+        )
+
+        a2a_app = A2AStarletteApplication(
+            agent_card=agent_card,
+            http_handler=request_handler,
             card_modifier=_add_v0_3_compat_interface,
-            card_url=f"{rpc_path}{AGENT_CARD_WELL_KNOWN_PATH}",
-        ),
-        jsonrpc_routes=create_jsonrpc_routes(
-            request_handler,
-            rpc_url=rpc_path,
             context_builder=_A2AServerCallContextBuilder(),
-            enable_v0_3_compat=True,
-        ),
-    )
+        )
+        card_url = f"{rpc_path.rstrip('/')}{AGENT_CARD_WELL_KNOWN_PATH}" if rpc_path else AGENT_CARD_WELL_KNOWN_PATH
+        a2a_app.add_routes_to_app(
+            app,
+            agent_card_url=card_url,
+            rpc_url=rpc_path or "/",
+        )

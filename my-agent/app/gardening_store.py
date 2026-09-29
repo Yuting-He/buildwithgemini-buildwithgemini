@@ -6,7 +6,7 @@ Uses SQLite for robust local and container-compatible relational storage.
 import os
 import sqlite3
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Optional, List, Dict, Any
 
 DB_PATH = os.environ.get("GARDEN_DB_PATH", os.path.join(os.path.dirname(__file__), "gardening.db"))
@@ -114,11 +114,54 @@ def init_db():
     )
     """)
 
+    # App Settings table for preferences like active_garden_id
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS app_settings (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+    )
+    """)
+
     conn.commit()
     conn.close()
 
 # Auto-initialize database on import
 init_db()
+
+# --- App Settings Operations ---
+def get_setting(key: str, default: Optional[str] = None) -> Optional[str]:
+    conn = get_db_connection()
+    row = conn.execute("SELECT value FROM app_settings WHERE key = ?", (key,)).fetchone()
+    conn.close()
+    return row["value"] if row else default
+
+def set_setting(key: str, value: str) -> None:
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+    INSERT INTO app_settings (key, value) VALUES (?, ?)
+    ON CONFLICT(key) DO UPDATE SET value=excluded.value
+    """, (key, value))
+    conn.commit()
+    conn.close()
+
+def get_active_garden() -> Optional[Dict[str, Any]]:
+    active_id = get_setting("active_garden_id")
+    if active_id:
+        g = get_garden(active_id)
+        if g:
+            return g
+    conn = get_db_connection()
+    row = conn.execute("SELECT * FROM gardens ORDER BY created_at ASC LIMIT 1").fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+def set_active_garden(garden_id: str) -> Optional[Dict[str, Any]]:
+    g = get_garden(garden_id)
+    if g:
+        set_setting("active_garden_id", garden_id)
+        return g
+    return None
 
 # --- Garden Operations ---
 def save_garden(garden_id: str, name: str, latitude: float, longitude: float, timezone: str = "UTC", location_label: str = "") -> Dict[str, Any]:
@@ -146,10 +189,7 @@ def get_garden(garden_id: str) -> Optional[Dict[str, Any]]:
     return dict(row) if row else None
 
 def get_default_garden() -> Optional[Dict[str, Any]]:
-    conn = get_db_connection()
-    row = conn.execute("SELECT * FROM gardens ORDER BY created_at ASC LIMIT 1").fetchone()
-    conn.close()
-    return dict(row) if row else None
+    return get_active_garden()
 
 def list_gardens() -> List[Dict[str, Any]]:
     conn = get_db_connection()
@@ -507,24 +547,11 @@ def evaluate_plant_condition(plant_id: str) -> Dict[str, Any]:
             has_recent_obs = True
 
     # Identify potential concerns
-    if urgent_task or symptom_obs:
-        reason = urgent_task["evidence_reason"] if urgent_task else f"Reported issue: {symptom_obs['notes']}"
-        action = urgent_task["description"] if urgent_task else "Inspect plant foliage and root zone immediately."
-        concerns.append({
-            "code": "needs_attention",
-            "label": "Needs attention",
-            "rank": 1,
-            "color": "#ef4444",
-            "icon": "error",
-            "reason": reason,
-            "action": action
-        })
-
     if frost_heat_task:
         concerns.append({
             "code": "heat_concern",
-            "label": "Heat or dryness concern" if "heat" in frost_heat_task.get("title", "").lower() else "Frost / Temperature concern",
-            "rank": 2,
+            "label": "Heat or dryness concern" if "heat" in (frost_heat_task.get("title", "") + frost_heat_task.get("evidence_reason", "")).lower() else "Frost / Temperature concern",
+            "rank": 1,
             "color": "#f59e0b",
             "icon": "thermostat",
             "reason": frost_heat_task["evidence_reason"],
@@ -535,7 +562,7 @@ def evaluate_plant_condition(plant_id: str) -> Dict[str, Any]:
         concerns.append({
             "code": "moisture_concern",
             "label": "Excess moisture concern",
-            "rank": 3,
+            "rank": 2,
             "color": "#06b6d4",
             "icon": "water_damage",
             "reason": moisture_task["evidence_reason"],
@@ -546,11 +573,27 @@ def evaluate_plant_condition(plant_id: str) -> Dict[str, Any]:
         concerns.append({
             "code": "watering_due",
             "label": "Watering check due",
-            "rank": 4,
+            "rank": 3,
             "color": "#0288d1",
             "icon": "water_drop",
             "reason": water_task["evidence_reason"],
             "action": water_task["description"]
+        })
+
+    # Only add generic needs_attention if there is an unhandled urgent task or disease/pest symptom
+    other_urgent = urgent_task if (urgent_task and urgent_task["id"] not in [t["id"] for t in [frost_heat_task, moisture_task, water_task] if t]) else None
+    other_symptom = symptom_obs if (symptom_obs and not (frost_heat_task or moisture_task)) else None
+    if other_urgent or other_symptom:
+        reason = other_urgent["evidence_reason"] if other_urgent else f"Reported issue: {symptom_obs['notes']}"
+        action = other_urgent["description"] if other_urgent else "Inspect plant foliage and root zone immediately."
+        concerns.append({
+            "code": "needs_attention",
+            "label": "Needs attention",
+            "rank": 0,
+            "color": "#ef4444",
+            "icon": "error",
+            "reason": reason,
+            "action": action
         })
 
     if not has_recent_obs:
@@ -590,5 +633,464 @@ def evaluate_plant_condition(plant_id: str) -> Dict[str, Any]:
         "recommended_action": recommended_action,
         "pending_tasks_count": len(tasks),
         "latest_observation": latest_obs
+    }
+
+
+# --- Fully Populated Example Garden Seeder ---
+def create_or_reset_example_garden(garden_id: str = "example-garden", switch_to: bool = True) -> Dict[str, Any]:
+    """
+    Creates or resets the populated FloraGuide Demonstration Garden.
+    Features distinct zones:
+    1. Sunny Patio: Potted olive tree, rosemary, lavender (containers)
+    2. Vegetable Beds: Two raised beds with tomatoes, lettuce, and carrots
+    3. Herb Corner: Basil, mint, and parsley in individual containers under pergola
+    4. Shaded Flower Bed: Hydrangea and ferns in an organic in-ground bed
+    5. Garden Path: Connecting stepping-stone walkway tying the garden together
+
+    Includes full profiles, realistic journal observations, and active tasks demonstrating
+    all 4 key plant conditions: Healthy, Watering Check Due, Heat Concern, and Excess Moisture Concern.
+    """
+    save_garden(
+        garden_id=garden_id,
+        name="FloraGuide Demonstration Garden",
+        latitude=37.7749,
+        longitude=-122.4194,
+        timezone="America/Los_Angeles",
+        location_label="Demonstration Garden (San Francisco)"
+    )
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    # Clean up previous entities for this garden to avoid stale duplicate entries
+    demo_plant_ids = [
+        "p-olive", "p-rosemary", "p-lavender", "p-tomato", "p-lettuce",
+        "p-carrot", "p-basil", "p-mint", "p-parsley", "p-hydrangea", "p-ferns"
+    ]
+    placeholders = ','.join('?' for _ in demo_plant_ids)
+    cursor.execute(f"DELETE FROM tasks WHERE plant_id IN ({placeholders}) OR area_id IN (SELECT id FROM growing_areas WHERE garden_id = ?)", (*demo_plant_ids, garden_id))
+    cursor.execute(f"DELETE FROM journal_entries WHERE plant_id IN ({placeholders}) OR area_id IN (SELECT id FROM growing_areas WHERE garden_id = ?)", (*demo_plant_ids, garden_id))
+    cursor.execute(f"DELETE FROM plants WHERE id IN ({placeholders}) OR area_id IN (SELECT id FROM growing_areas WHERE garden_id = ?)", (*demo_plant_ids, garden_id))
+    cursor.execute("DELETE FROM growing_areas WHERE garden_id = ?", (garden_id,))
+    conn.commit()
+    conn.close()
+
+    # --- 1. Growing Areas ---
+    save_growing_area(
+        area_id="area-sunny-patio",
+        garden_id=garden_id,
+        name="Sunny Patio",
+        area_type="patio",
+        sun_exposure="full sun",
+        shelter_from_rain=False,
+        watering_arrangements="Drip line & manual watering can",
+        notes="Warm south-facing stone terrace with terracotta pots."
+    )
+
+    save_growing_area(
+        area_id="area-veg-bed-1",
+        garden_id=garden_id,
+        name="Vegetable Bed 1",
+        area_type="raised bed",
+        sun_exposure="full sun",
+        shelter_from_rain=False,
+        watering_arrangements="Soaker hose",
+        notes="Cedar raised bed, 12 inches deep with nutrient-rich compost."
+    )
+
+    save_growing_area(
+        area_id="area-veg-bed-2",
+        garden_id=garden_id,
+        name="Vegetable Bed 2",
+        area_type="raised bed",
+        sun_exposure="full sun",
+        shelter_from_rain=False,
+        watering_arrangements="Soaker hose",
+        notes="Cedar raised bed for leafy greens and root crops."
+    )
+
+    save_growing_area(
+        area_id="area-herb-corner",
+        garden_id=garden_id,
+        name="Herb Corner",
+        area_type="patio",
+        sun_exposure="partial sun",
+        shelter_from_rain=True,
+        watering_arrangements="Hand watered daily",
+        notes="Sheltered culinary herb nook under porch pergola eaves."
+    )
+
+    save_growing_area(
+        area_id="area-shaded-bed",
+        garden_id=garden_id,
+        name="Shaded Flower Bed",
+        area_type="ground",
+        sun_exposure="deep shade",
+        shelter_from_rain=False,
+        watering_arrangements="Ambient rainfall with supplementary hose",
+        notes="Dappled light under mature canopy with rich organic mulch."
+    )
+
+    save_growing_area(
+        area_id="area-garden-path",
+        garden_id=garden_id,
+        name="Garden Path",
+        area_type="path",
+        sun_exposure="partial sun",
+        shelter_from_rain=False,
+        watering_arrangements="None (gravel walkway)",
+        notes="Connecting walkway making layout feel like a real garden."
+    )
+
+    now_utc = datetime.now(timezone.utc)
+
+    # --- 2. Plants ---
+    # Sunny Patio
+    save_plant(
+        plant_id="p-olive",
+        area_id="area-sunny-patio",
+        name="Dwarf Olive Tree",
+        species='Olea europaea "Arbequina"',
+        planting_date=(now_utc - timedelta(days=180)).strftime("%Y-%m-%d"),
+        planting_type="container",
+        container_size_liters=45.0,
+        substrate_type="mediterranean gravel blend",
+        drainage_quality="excellent",
+        growth_stage="mature"
+    )
+    save_plant(
+        plant_id="p-rosemary",
+        area_id="area-sunny-patio",
+        name="Tuscan Rosemary",
+        species="Salvia rosmarinus",
+        planting_date=(now_utc - timedelta(days=90)).strftime("%Y-%m-%d"),
+        planting_type="container",
+        container_size_liters=8.0,
+        substrate_type="sandy loam mix",
+        drainage_quality="excellent",
+        growth_stage="vegetative"
+    )
+    save_plant(
+        plant_id="p-lavender",
+        area_id="area-sunny-patio",
+        name="English Lavender",
+        species='Lavandula angustifolia "Munstead"',
+        planting_date=(now_utc - timedelta(days=120)).strftime("%Y-%m-%d"),
+        planting_type="container",
+        container_size_liters=6.0,
+        substrate_type="well-draining rocky mix",
+        drainage_quality="excellent",
+        growth_stage="flowering"
+    )
+
+    # Vegetable Beds
+    save_plant(
+        plant_id="p-tomato",
+        area_id="area-veg-bed-1",
+        name="San Marzano Tomatoes",
+        species="Solanum lycopersicum",
+        planting_date=(now_utc - timedelta(days=55)).strftime("%Y-%m-%d"),
+        planting_type="raised bed",
+        container_size_liters=0.0,
+        substrate_type="organic compost & garden loam",
+        drainage_quality="good",
+        growth_stage="fruiting"
+    )
+    save_plant(
+        plant_id="p-lettuce",
+        area_id="area-veg-bed-2",
+        name="Butterhead Lettuce",
+        species="Lactuca sativa",
+        planting_date=(now_utc - timedelta(days=30)).strftime("%Y-%m-%d"),
+        planting_type="raised bed",
+        container_size_liters=0.0,
+        substrate_type="rich garden loam",
+        drainage_quality="moderate",
+        growth_stage="vegetative"
+    )
+    save_plant(
+        plant_id="p-carrot",
+        area_id="area-veg-bed-2",
+        name="Nantes Carrots",
+        species="Daucus carota sativus",
+        planting_date=(now_utc - timedelta(days=40)).strftime("%Y-%m-%d"),
+        planting_type="raised bed",
+        container_size_liters=0.0,
+        substrate_type="loose sandy loam",
+        drainage_quality="good",
+        growth_stage="vegetative"
+    )
+
+    # Herb Corner
+    save_plant(
+        plant_id="p-basil",
+        area_id="area-herb-corner",
+        name="Sweet Genovese Basil",
+        species="Ocimum basilicum",
+        planting_date=(now_utc - timedelta(days=25)).strftime("%Y-%m-%d"),
+        planting_type="container",
+        container_size_liters=4.0,
+        substrate_type="moist potting soil",
+        drainage_quality="good",
+        growth_stage="vegetative"
+    )
+    save_plant(
+        plant_id="p-mint",
+        area_id="area-herb-corner",
+        name="Spearmint",
+        species="Mentha spicata",
+        planting_date=(now_utc - timedelta(days=60)).strftime("%Y-%m-%d"),
+        planting_type="container",
+        container_size_liters=5.0,
+        substrate_type="organic potting mix",
+        drainage_quality="good",
+        growth_stage="vegetative"
+    )
+    save_plant(
+        plant_id="p-parsley",
+        area_id="area-herb-corner",
+        name="Flat-Leaf Italian Parsley",
+        species="Petroselinum crispum",
+        planting_date=(now_utc - timedelta(days=45)).strftime("%Y-%m-%d"),
+        planting_type="container",
+        container_size_liters=3.5,
+        substrate_type="rich potting compost",
+        drainage_quality="good",
+        growth_stage="vegetative"
+    )
+
+    # Shaded Flower Bed
+    save_plant(
+        plant_id="p-hydrangea",
+        area_id="area-shaded-bed",
+        name="French Hydrangea",
+        species="Hydrangea macrophylla",
+        planting_date=(now_utc - timedelta(days=150)).strftime("%Y-%m-%d"),
+        planting_type="in-ground",
+        container_size_liters=0.0,
+        substrate_type="acidic moist garden loam",
+        drainage_quality="moderate",
+        growth_stage="flowering"
+    )
+    save_plant(
+        plant_id="p-ferns",
+        area_id="area-shaded-bed",
+        name="Ostrich Ferns",
+        species="Matteuccia struthiopteris",
+        planting_date=(now_utc - timedelta(days=200)).strftime("%Y-%m-%d"),
+        planting_type="in-ground",
+        container_size_liters=0.0,
+        substrate_type="humus-rich woodland soil",
+        drainage_quality="good",
+        growth_stage="vegetative"
+    )
+
+    # --- 3. Sample Observations / Journal Entries ---
+    entries = [
+        ("obs-olive-1", "p-olive", "area-sunny-patio", "observation", "general", "Flourishing canopy with healthy silvery foliage. Excellent soil drainage in terra-cotta planter.", now_utc - timedelta(days=1)),
+        ("obs-rosemary-1", "p-rosemary", "area-sunny-patio", "observation", "general", "Upper 2 inches of gritty container mix feel dry. Growth is compact and aromatic.", now_utc - timedelta(days=1)),
+        ("obs-lavender-1", "p-lavender", "area-sunny-patio", "observation", "flowering", "Fragrant purple flower spikes blooming vigorously; pollinator bees actively visiting.", now_utc - timedelta(days=2)),
+        ("obs-tomato-1", "p-tomato", "area-veg-bed-1", "observation", "fruiting", "Heavy green fruit clusters swelling quickly; staked and tied main vine securely.", now_utc - timedelta(days=1)),
+        ("obs-lettuce-1", "p-lettuce", "area-veg-bed-2", "observation", "observation", "Dense crisp heads forming. Soil heavily saturated from recent watering; lower leaves resting on damp compost.", now_utc - timedelta(days=1)),
+        ("obs-carrot-1", "p-carrot", "area-veg-bed-2", "observation", "growth", "Feathery green foliage growing uniformly. Thinned seedlings to 2-inch spacing.", now_utc - timedelta(days=3)),
+        ("obs-basil-1", "p-basil", "area-herb-corner", "observation", "symptom", "Noted afternoon leaf drooping and slight leaf-tip curling during intense 32°C heatwave.", now_utc - timedelta(days=1)),
+        ("obs-mint-1", "p-mint", "area-herb-corner", "observation", "harvest", "Vigorous aromatic growth contained in planter; pinched shoots for culinary tea.", now_utc - timedelta(days=2)),
+        ("obs-parsley-1", "p-parsley", "area-herb-corner", "observation", "harvest", "Healthy new growth emerging from crown; outer stems harvested for kitchen prep.", now_utc - timedelta(days=2)),
+        ("obs-hydrangea-1", "p-hydrangea", "area-shaded-bed", "observation", "flowering", "Lush violet-blue bloom globes in peak flower. Low bed depression holding excess runoff.", now_utc - timedelta(days=1)),
+        ("obs-ferns-1", "p-ferns", "area-shaded-bed", "observation", "growth", "Lush arching fronds unfurling in cool dappled shade under organic mulch layer.", now_utc - timedelta(days=2))
+    ]
+
+    for eid, pid, aid, etype, cat, note, ts in entries:
+        add_journal_entry(
+            entry_id=eid,
+            plant_id=pid,
+            area_id=aid,
+            entry_type=etype,
+            category=cat,
+            notes=note,
+            timestamp=ts.isoformat()
+        )
+
+    # --- 4. Sample Tasks (Driving Clearly Labeled Conditions) ---
+    today_str = now_utc.strftime("%Y-%m-%d")
+
+    # Watering check due: Tomatoes & Rosemary
+    save_task(
+        task_id="task-water-tomato",
+        plant_id="p-tomato",
+        area_id="area-veg-bed-1",
+        task_date=today_str,
+        action_type="water",
+        priority="recommended",
+        title="Watering check: Deep root hydration",
+        description="Water deeply at base using soaker line until 6-inch soil depth is moist.",
+        evidence_reason="Active fruit swelling stage; soil moisture sensor reads low in root zone."
+    )
+    save_task(
+        task_id="task-water-rosemary",
+        plant_id="p-rosemary",
+        area_id="area-sunny-patio",
+        task_date=today_str,
+        action_type="water",
+        priority="recommended",
+        title="Watering check: Container soil check",
+        description="Water moderately until slight drainage occurs from container base.",
+        evidence_reason="Upper 2 inches of gritty container mix are dry to the touch."
+    )
+
+    # Heat concern: Sweet Genovese Basil
+    save_task(
+        task_id="task-heat-basil",
+        plant_id="p-basil",
+        area_id="area-herb-corner",
+        task_date=today_str,
+        action_type="shelter_protection",
+        priority="urgent",
+        title="Heat concern: Afternoon sun stress",
+        description="Shift container 2 feet into pergola shade and mist surrounding stones.",
+        evidence_reason="Intense afternoon heatwave (32°C / 90°F) causing temporary leaf curl and transpiration stress."
+    )
+
+    # Excess-moisture concern: French Hydrangea & Butterhead Lettuce
+    save_task(
+        task_id="task-moisture-hydrangea",
+        plant_id="p-hydrangea",
+        area_id="area-shaded-bed",
+        task_date=today_str,
+        action_type="inspect_soil",
+        priority="urgent",
+        title="Excess-moisture concern: Shaded soil saturation",
+        description="Gently aerate mulch around root flare and ensure runoff drainage channel is clear.",
+        evidence_reason="Excess moisture alert: drainage depression retaining rainwater runoff in shaded bed."
+    )
+    save_task(
+        task_id="task-moisture-lettuce",
+        plant_id="p-lettuce",
+        area_id="area-veg-bed-2",
+        task_date=today_str,
+        action_type="inspect_soil",
+        priority="recommended",
+        title="Excess-moisture concern: Damp bottom foliage",
+        description="Allow top 1 inch of raised bed soil to dry before next watering.",
+        evidence_reason="Persistent surface dampness on dense compost mulch; risk of lower leaf rot."
+    )
+
+    # --- 5. Persisted 2D/3D Geometry Layout ---
+    layout_data = {
+        "areas": [
+            {
+                "id": "area-sunny-patio",
+                "name": "Sunny Patio",
+                "area_type": "patio",
+                "shape_type": "polygon",
+                "points": [
+                    {"x": 100, "y": 120},
+                    {"x": 340, "y": 120},
+                    {"x": 370, "y": 220},
+                    {"x": 350, "y": 340},
+                    {"x": 230, "y": 370},
+                    {"x": 100, "y": 350}
+                ],
+                "rotation": 0
+            },
+            {
+                "id": "area-veg-bed-1",
+                "name": "Vegetable Bed 1",
+                "area_type": "raised bed",
+                "shape_type": "rect",
+                "points": [
+                    {"x": 520, "y": 120},
+                    {"x": 740, "y": 120},
+                    {"x": 740, "y": 230},
+                    {"x": 520, "y": 230}
+                ],
+                "rotation": 0
+            },
+            {
+                "id": "area-veg-bed-2",
+                "name": "Vegetable Bed 2",
+                "area_type": "raised bed",
+                "shape_type": "rect",
+                "points": [
+                    {"x": 520, "y": 270},
+                    {"x": 740, "y": 270},
+                    {"x": 740, "y": 380},
+                    {"x": 520, "y": 380}
+                ],
+                "rotation": 0
+            },
+            {
+                "id": "area-herb-corner",
+                "name": "Herb Corner",
+                "area_type": "patio",
+                "shape_type": "polygon",
+                "points": [
+                    {"x": 100, "y": 410},
+                    {"x": 300, "y": 410},
+                    {"x": 320, "y": 530},
+                    {"x": 240, "y": 600},
+                    {"x": 100, "y": 600}
+                ],
+                "rotation": 0
+            },
+            {
+                "id": "area-shaded-bed",
+                "name": "Shaded Flower Bed",
+                "area_type": "ground",
+                "shape_type": "freehand",
+                "points": [
+                    {"x": 480, "y": 460},
+                    {"x": 650, "y": 430},
+                    {"x": 790, "y": 480},
+                    {"x": 820, "y": 580},
+                    {"x": 720, "y": 640},
+                    {"x": 530, "y": 630},
+                    {"x": 460, "y": 540}
+                ],
+                "rotation": 0
+            },
+            {
+                "id": "area-garden-path",
+                "name": "Garden Path",
+                "area_type": "path",
+                "shape_type": "polygon",
+                "points": [
+                    {"x": 340, "y": 220},
+                    {"x": 480, "y": 240},
+                    {"x": 520, "y": 380},
+                    {"x": 490, "y": 440},
+                    {"x": 350, "y": 440},
+                    {"x": 330, "y": 390},
+                    {"x": 430, "y": 390},
+                    {"x": 430, "y": 290},
+                    {"x": 340, "y": 270}
+                ],
+                "rotation": 0
+            }
+        ],
+        "plants": [
+            {"id": "p-olive", "x": 170, "y": 200, "scale": 1.4},
+            {"id": "p-rosemary", "x": 270, "y": 180, "scale": 1.1},
+            {"id": "p-lavender", "x": 290, "y": 270, "scale": 1.0},
+            {"id": "p-tomato", "x": 630, "y": 175, "scale": 1.3},
+            {"id": "p-lettuce", "x": 580, "y": 325, "scale": 0.95},
+            {"id": "p-carrot", "x": 680, "y": 325, "scale": 0.85},
+            {"id": "p-basil", "x": 160, "y": 480, "scale": 1.0},
+            {"id": "p-mint", "x": 230, "y": 470, "scale": 1.0},
+            {"id": "p-parsley", "x": 190, "y": 540, "scale": 0.95},
+            {"id": "p-hydrangea", "x": 590, "y": 530, "scale": 1.35},
+            {"id": "p-ferns", "x": 710, "y": 550, "scale": 1.15}
+        ]
+    }
+    save_garden_layout(garden_id, layout_data)
+
+    if switch_to:
+        set_active_garden(garden_id)
+
+    return {
+        "status": "success",
+        "garden_id": garden_id,
+        "growing_areas_count": 6,
+        "plants_count": 11,
+        "layout": layout_data
     }
 

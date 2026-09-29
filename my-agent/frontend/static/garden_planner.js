@@ -310,9 +310,15 @@
 
       // Transform / Drag state
       this.isDraggingObject = false;
-      this.dragTargetType = null; // 'plant' | 'area' | 'vertex'
+      this.dragTargetType = null; // 'plant' | 'area' | 'vertex' | 'resize'
       this.dragStartWorld = { x: 0, y: 0 };
       this.dragVertexIndex = -1;
+      this.resizeHandle = null; // 'nw' | 'ne' | 'se' | 'sw'
+      this.resizeOrigBounds = null;
+      this.resizeOrigPoints = null;
+      this.pendingAreaPoints = null;
+      this.pendingShapeType = null;
+      this.hoveredAreaId = null;
       this.ghostPlant = null; // for drag from library
 
       // 3D Three.js State
@@ -332,6 +338,7 @@
 
       this.saveDebounceTimer = null;
       this.touchPendingPlant = null; // for tap-to-place on mobile
+      this.librarySearchQuery = '';
     }
 
     init() {
@@ -350,8 +357,52 @@
     }
 
     // --- Loading & Synchronization ---
+    async loadGardenList() {
+      try {
+        const res = await fetchJSON('/api/gardens');
+        if (!res || !res.gardens) return;
+        const sel = document.getElementById('select-active-garden');
+        if (!sel) return;
+        sel.innerHTML = res.gardens.map(g => `
+          <option value="${g.id}" ${g.id === res.active_garden_id ? 'selected' : ''}>${g.name} (${g.total_plants != null ? g.total_plants : (this.plants ? this.plants.length : 0)} plants)</option>
+        `).join('');
+      } catch (err) {
+        console.error("Failed to load garden list:", err);
+      }
+    }
+
+    async switchGarden(gardenId) {
+      try {
+        await fetchJSON(`/api/gardens/switch/${gardenId}`, { method: 'POST' });
+        this.clearSelection();
+        this.undoStack = [];
+        this.redoStack = [];
+        await this.loadGardenData();
+        this.showToast("Switched active garden.");
+      } catch (err) {
+        console.error("Failed to switch garden:", err);
+      }
+    }
+
+    async loadExampleGarden() {
+      try {
+        this.showToast("Loading demonstration garden...");
+        await fetchJSON('/api/garden/load-example', { method: 'POST' });
+        this.clearSelection();
+        this.undoStack = [];
+        this.redoStack = [];
+        await this.loadGardenData();
+        await this.loadGardenList();
+        this.showToast("Demonstration Garden loaded!");
+      } catch (err) {
+        console.error("Failed to load example garden:", err);
+      }
+    }
+
     async loadGardenData() {
       try {
+        await this.loadGardenList();
+
         const summary = await fetchJSON('/api/garden');
         if (!summary) return;
 
@@ -371,6 +422,7 @@
         }
 
         this.renderAll();
+        setTimeout(() => this.fitToGarden(), 100);
       } catch (e) {
         console.error("Error loading garden planner data:", e);
       }
@@ -575,9 +627,13 @@
       const container = document.getElementById('garden-library-list');
       if (!container) return;
 
+      const q = (this.librarySearchQuery || '').trim().toLowerCase();
+      const matchPlant = p => !q || (p.name && p.name.toLowerCase().includes(q)) || (p.species && p.species.toLowerCase().includes(q));
+
       const placedIds = new Set(this.layout.plants.map(p => p.id));
-      const unplacedPlants = this.plants.filter(p => !placedIds.has(p.id));
-      const placedPlants = this.plants.filter(p => placedIds.has(p.id));
+      const unplacedPlants = this.plants.filter(p => !placedIds.has(p.id)).filter(matchPlant);
+      const placedPlants = this.plants.filter(p => placedIds.has(p.id)).filter(matchPlant);
+      const matchingPresets = PLANT_PRESETS.filter(pr => !q || pr.name.toLowerCase().includes(q) || (pr.description && pr.description.toLowerCase().includes(q)));
 
       let html = '';
 
@@ -590,7 +646,7 @@
       `;
 
       if (unplacedPlants.length === 0) {
-        html += `<div class="lib-empty">All plants are placed in the garden.</div>`;
+        html += `<div class="lib-empty">${q ? 'No awaiting plants match search.' : 'All plants are placed in the garden.'}</div>`;
       } else {
         html += unplacedPlants.map(p => {
           const condition = p.condition || { badge_label: 'Doing well', color: '#22c55e', icon: 'spa' };
@@ -619,38 +675,44 @@
         </div>
       `;
 
-      html += placedPlants.map(p => {
-        const condition = p.condition || { badge_label: 'Doing well', color: '#22c55e', icon: 'spa' };
-        const areaName = p.area_name || 'Garden Bed';
-        const isSelected = this.selectedPlantId === p.id;
-        return `
-          <div class="lib-plant-card placed ${isSelected ? 'active-selection' : ''}" onclick="window.gardenPlanner.selectPlant('${p.id}')">
-            <div class="lib-plant-icon" style="border-color:${condition.color};">${this.getPlantTypeEmoji(this.inferPlantType(p.name, p.species))}</div>
-            <div class="lib-plant-info">
-              <div class="lib-plant-name">${p.name}</div>
-              <div class="lib-plant-sub">In <strong>${areaName}</strong></div>
-              <div class="lib-plant-status" style="color:${condition.color};">
-                <span class="material-symbols-outlined status-mini-icon">${condition.icon}</span> ${condition.badge_label}
+      if (placedPlants.length === 0) {
+        html += `<div class="lib-empty">${q ? 'No placed plants match search.' : 'No plants placed yet.'}</div>`;
+      } else {
+        html += placedPlants.map(p => {
+          const condition = p.condition || { badge_label: 'Doing well', color: '#22c55e', icon: 'spa' };
+          const areaName = p.area_name || 'Garden Bed';
+          const isSelected = this.selectedPlantId === p.id;
+          return `
+            <div class="lib-plant-card placed ${isSelected ? 'active-selection' : ''}" onclick="window.gardenPlanner.selectPlant('${p.id}')">
+              <div class="lib-plant-icon" style="border-color:${condition.color};">${this.getPlantTypeEmoji(this.inferPlantType(p.name, p.species))}</div>
+              <div class="lib-plant-info">
+                <div class="lib-plant-name">${p.name}</div>
+                <div class="lib-plant-sub">In <strong>${areaName}</strong></div>
+                <div class="lib-plant-status" style="color:${condition.color};">
+                  <span class="material-symbols-outlined status-mini-icon">${condition.icon}</span> ${condition.badge_label}
+                </div>
               </div>
             </div>
-          </div>
-        `;
-      }).join('');
+          `;
+        }).join('');
+      }
 
       // Section: Botanical Presets
-      html += `
-        <div class="lib-group-title" style="margin-top: 1.2rem;">
-          <span>Plant Presets Catalog</span>
-        </div>
-        <div class="preset-grid">
-          ${PLANT_PRESETS.map(preset => `
-            <div class="preset-chip ${this.touchPendingPlant && this.touchPendingPlant.presetId === preset.id_prefix ? 'touch-selected' : ''}" draggable="true" data-preset-id="${preset.id_prefix}" onclick="window.gardenPlanner.handlePresetClick('${preset.id_prefix}')" title="${preset.description}">
-              <span class="preset-emoji">${preset.icon}</span>
-              <span class="preset-name">${preset.name}</span>
-            </div>
-          `).join('')}
-        </div>
-      `;
+      if (matchingPresets.length > 0) {
+        html += `
+          <div class="lib-group-title" style="margin-top: 1.2rem;">
+            <span>Plant Presets Catalog</span>
+          </div>
+          <div class="preset-grid">
+            ${matchingPresets.map(preset => `
+              <div class="preset-chip ${this.touchPendingPlant && this.touchPendingPlant.presetId === preset.id_prefix ? 'touch-selected' : ''}" draggable="true" data-preset-id="${preset.id_prefix}" onclick="window.gardenPlanner.handlePresetClick('${preset.id_prefix}')" title="${preset.description}">
+                <span class="preset-emoji">${preset.icon}</span>
+                <span class="preset-name">${preset.name}</span>
+              </div>
+            `).join('')}
+          </div>
+        `;
+      }
 
       container.innerHTML = html;
       this.bindLibraryDragEvents();
@@ -776,25 +838,45 @@
     setupCanvas2D() {
       if (!this.canvas) return;
 
-      const resize = () => {
+      this.resize = () => {
+        if (!this.canvas || !this.canvas.parentElement) return;
         const rect = this.canvas.parentElement.getBoundingClientRect();
+        const width = Math.floor(rect.width);
+        const height = Math.floor(rect.height);
+        if (width === 0 || height === 0) return;
+
         const dpr = window.devicePixelRatio || 1;
-        this.canvas.width = rect.width * dpr;
-        this.canvas.height = rect.height * dpr;
-        this.ctx.scale(dpr, dpr);
-        this.canvas.style.width = `${rect.width}px`;
-        this.canvas.style.height = `${rect.height}px`;
-        this.renderCanvas2D();
+        this.canvas.width = width * dpr;
+        this.canvas.height = height * dpr;
+        this.canvas.style.width = `${width}px`;
+        this.canvas.style.height = `${height}px`;
+
+        this.resizeThree();
+
+        if (this.activeDimension === '2d') {
+          this.renderCanvas2D();
+        } else {
+          this.renderThree3D();
+        }
       };
 
-      window.addEventListener('resize', resize);
-      setTimeout(resize, 50);
+      window.addEventListener('resize', () => this.resize());
+      if (window.ResizeObserver && this.canvas.parentElement) {
+        const ro = new ResizeObserver(() => this.resize());
+        ro.observe(this.canvas.parentElement);
+      }
+      setTimeout(() => this.resize(), 50);
 
       // Mouse & Pointer events on 2D Canvas
       this.canvas.addEventListener('mousedown', (e) => this.handleCanvasMouseDown(e));
       this.canvas.addEventListener('mousemove', (e) => this.handleCanvasMouseMove(e));
       window.addEventListener('mouseup', (e) => this.handleCanvasMouseUp(e));
       this.canvas.addEventListener('wheel', (e) => this.handleCanvasWheel(e), { passive: false });
+      this.canvas.addEventListener('dblclick', () => {
+        if (this.activeTool === 'polygon' && this.polygonPoints.length >= 3) {
+          this.finishPolygonArea();
+        }
+      });
 
       // Drag and drop onto 2D Canvas
       this.canvas.addEventListener('dragover', (e) => this.handleCanvasDragOver(e));
@@ -869,10 +951,12 @@
       if (this.activeTool === 'freehand') {
         this.isDrawing = true;
         this.freehandPoints = [mouse];
+        this.renderCanvas2D();
       } else if (this.activeTool === 'rect') {
         this.isDrawing = true;
         this.rectStart = mouse;
         this.rectCurrent = mouse;
+        this.renderCanvas2D();
       } else if (this.activeTool === 'polygon') {
         if (this.polygonPoints.length === 0) {
           this.polygonPoints.push(mouse);
@@ -880,15 +964,39 @@
           const startPt = this.polygonPoints[0];
           if (Geometry.distance(mouse, startPt) < 18 / this.zoom && this.polygonPoints.length >= 3) {
             this.finishPolygonArea();
+            return;
           } else {
             this.polygonPoints.push(mouse);
           }
         }
+        const countSpan = document.getElementById('poly-point-count');
+        if (countSpan) countSpan.textContent = this.polygonPoints.length.toString();
         this.renderCanvas2D();
       } else if (this.activeTool === 'select') {
+        // 1. Check Corner Resize Handles of Selected Area
         if (this.selectedAreaId) {
           const area = this.layout.areas.find(a => a.id === this.selectedAreaId);
           if (area) {
+            const bounds = Geometry.polygonBounds(area.points);
+            const corners = [
+              { id: 'nw', x: bounds.minX - 4 / this.zoom, y: bounds.minY - 4 / this.zoom },
+              { id: 'ne', x: bounds.maxX + 4 / this.zoom, y: bounds.minY - 4 / this.zoom },
+              { id: 'se', x: bounds.maxX + 4 / this.zoom, y: bounds.maxY + 4 / this.zoom },
+              { id: 'sw', x: bounds.minX - 4 / this.zoom, y: bounds.maxY + 4 / this.zoom }
+            ];
+            for (let c of corners) {
+              if (Geometry.distance(mouse, c) < 14 / this.zoom) {
+                this.pushUndo();
+                this.isDraggingObject = true;
+                this.dragTargetType = 'resize';
+                this.resizeHandle = c.id;
+                this.resizeOrigBounds = { ...bounds };
+                this.resizeOrigPoints = area.points.map(p => ({ ...p }));
+                return;
+              }
+            }
+
+            // 2. Check Boundary Vertex Handles
             for (let i = 0; i < area.points.length; i++) {
               if (Geometry.distance(mouse, area.points[i]) < 12 / this.zoom) {
                 this.pushUndo();
@@ -901,6 +1009,7 @@
           }
         }
 
+        // 3. Check Plant Click
         const hitPlant = this.hitTestPlant(mouse);
         if (hitPlant) {
           this.pushUndo();
@@ -912,6 +1021,7 @@
           return;
         }
 
+        // 4. Check Area Body Click
         const hitArea = this.hitTestArea(mouse);
         if (hitArea) {
           this.pushUndo();
@@ -923,6 +1033,7 @@
           return;
         }
 
+        // 5. Empty Canvas Click -> Clear Selection & Pan
         this.clearSelection();
         this.isPanning = true;
         this.panStart = { x: e.clientX - this.panX, y: e.clientY - this.panY };
@@ -990,6 +1101,60 @@
             area.points[this.dragVertexIndex].y = mouse.y;
             this.renderCanvas2D();
           }
+        } else if (this.dragTargetType === 'resize' && this.selectedAreaId) {
+          const area = this.layout.areas.find(a => a.id === this.selectedAreaId);
+          if (area && this.resizeOrigBounds && this.resizeOrigPoints) {
+            const b = this.resizeOrigBounds;
+            let anchorX = b.minX;
+            let anchorY = b.minY;
+            let currentW = b.width;
+            let currentH = b.height;
+            let newW = b.width;
+            let newH = b.height;
+
+            if (this.resizeHandle === 'se') {
+              anchorX = b.minX;
+              anchorY = b.minY;
+              newW = Math.max(30, mouse.x - anchorX);
+              newH = Math.max(30, mouse.y - anchorY);
+            } else if (this.resizeHandle === 'sw') {
+              anchorX = b.maxX;
+              anchorY = b.minY;
+              newW = Math.max(30, anchorX - mouse.x);
+              newH = Math.max(30, mouse.y - anchorY);
+            } else if (this.resizeHandle === 'ne') {
+              anchorX = b.minX;
+              anchorY = b.maxY;
+              newW = Math.max(30, mouse.x - anchorX);
+              newH = Math.max(30, anchorY - mouse.y);
+            } else if (this.resizeHandle === 'nw') {
+              anchorX = b.maxX;
+              anchorY = b.maxY;
+              newW = Math.max(30, anchorX - mouse.x);
+              newH = Math.max(30, anchorY - mouse.y);
+            }
+
+            const scaleX = currentW > 0 ? newW / currentW : 1;
+            const scaleY = currentH > 0 ? newH / currentH : 1;
+
+            area.points.forEach((p, idx) => {
+              const orig = this.resizeOrigPoints[idx];
+              if (this.resizeHandle === 'se') {
+                p.x = anchorX + (orig.x - anchorX) * scaleX;
+                p.y = anchorY + (orig.y - anchorY) * scaleY;
+              } else if (this.resizeHandle === 'sw') {
+                p.x = anchorX - (anchorX - orig.x) * scaleX;
+                p.y = anchorY + (orig.y - anchorY) * scaleY;
+              } else if (this.resizeHandle === 'ne') {
+                p.x = anchorX + (orig.x - anchorX) * scaleX;
+                p.y = anchorY - (anchorY - orig.y) * scaleY;
+              } else if (this.resizeHandle === 'nw') {
+                p.x = anchorX - (anchorX - orig.x) * scaleX;
+                p.y = anchorY - (anchorY - orig.y) * scaleY;
+              }
+            });
+            this.renderCanvas2D();
+          }
         }
       } else if (this.activeTool === 'polygon' && this.polygonPoints.length > 0) {
         this.renderCanvas2D(mouse);
@@ -1004,10 +1169,12 @@
       if (this.isDrawing) {
         if (this.activeTool === 'freehand') {
           this.isDrawing = false;
-          if (this.freehandPoints.length >= 6) {
+          if (this.freehandPoints.length >= 5) {
             this.finishFreehandArea();
+          } else {
+            this.freehandPoints = [];
+            this.renderCanvas2D();
           }
-          this.freehandPoints = [];
         } else if (this.activeTool === 'rect' && this.rectStart && this.rectCurrent) {
           this.isDrawing = false;
           this.finishRectArea();
@@ -1028,6 +1195,9 @@
         }
         this.isDraggingObject = false;
         this.dragTargetType = null;
+        this.resizeHandle = null;
+        this.resizeOrigBounds = null;
+        this.resizeOrigPoints = null;
         this.hoveredAreaId = null;
         this.scheduleSave();
         this.renderAll();
@@ -1244,7 +1414,15 @@
 
     // --- Shape Creation & Smoothing ---
     finishFreehandArea() {
-      const reduced = Geometry.douglasPeucker(this.freehandPoints, 8 / this.zoom);
+      if (this.freehandPoints.length < 5) return;
+      const first = this.freehandPoints[0];
+      const last = this.freehandPoints[this.freehandPoints.length - 1];
+      if (Geometry.distance(first, last) > 4) {
+        this.freehandPoints.push({ x: first.x, y: first.y });
+      }
+
+      const reduced = Geometry.douglasPeucker(this.freehandPoints, 6 / this.zoom);
+      this.freehandPoints = [];
       if (reduced.length < 3) return;
       const smoothed = Geometry.chaikinSmooth(reduced, 2);
       this.openAreaModalWithPoints(smoothed, 'freehand');
@@ -1269,10 +1447,23 @@
     }
 
     finishPolygonArea() {
-      if (this.polygonPoints.length < 3) return;
+      if (this.polygonPoints.length < 3) {
+        this.showToast("Add at least 3 points to complete the polygon.");
+        return;
+      }
       const points = this.polygonPoints.slice();
       this.polygonPoints = [];
+      const polyControls = document.getElementById('polygon-drawing-controls');
+      if (polyControls) polyControls.style.display = 'none';
       this.openAreaModalWithPoints(points, 'polygon');
+    }
+
+    cancelPolygon() {
+      this.polygonPoints = [];
+      const polyControls = document.getElementById('polygon-drawing-controls');
+      if (polyControls) polyControls.style.display = 'none';
+      this.setTool('select');
+      this.renderCanvas2D();
     }
 
     openAreaModalWithPoints(points, shapeType) {
@@ -1281,12 +1472,15 @@
 
       const modal = document.getElementById('modal-area-create');
       if (modal) {
-        document.getElementById('area-form-name').value = `Growing Area ${this.layout.areas.length + 1}`;
-        document.getElementById('area-form-type').value = 'raised bed';
+        const nextNum = this.layout.areas.length + 1;
+        document.getElementById('area-form-name').value = `Growing Area ${nextNum}`;
+        document.getElementById('area-form-type').value = shapeType === 'freehand' ? 'in-ground' : 'raised bed';
         document.getElementById('area-form-sun').value = 'full sun';
         document.getElementById('area-form-shelter').value = '0';
+        document.getElementById('area-form-watering').value = 'Manual watering';
         modal.style.display = 'flex';
       }
+      this.renderCanvas2D();
     }
 
     async submitNewArea() {
@@ -1325,10 +1519,13 @@
             rotation: 0
           });
 
+          this.pendingAreaPoints = null;
+          this.pendingShapeType = null;
+          this.closeAreaModal();
           this.selectArea(newArea.id);
+          this.setTool('select');
           this.scheduleSave();
           this.renderAll();
-          this.closeAreaModal();
           this.showToast(`Created growing area "${name}".`);
         }
       } catch (err) {
@@ -1340,7 +1537,9 @@
       const modal = document.getElementById('modal-area-create');
       if (modal) modal.style.display = 'none';
       this.pendingAreaPoints = null;
+      this.pendingShapeType = null;
       this.setTool('select');
+      this.renderCanvas2D();
     }
 
     // --- Hit Testing ---
@@ -1397,10 +1596,12 @@
       if (!this.ctx || !this.canvas) return;
 
       const ctx = this.ctx;
-      const width = this.canvas.width / (window.devicePixelRatio || 1);
-      const height = this.canvas.height / (window.devicePixelRatio || 1);
+      const dpr = window.devicePixelRatio || 1;
+      const width = this.canvas.width / dpr;
+      const height = this.canvas.height / dpr;
 
       ctx.save();
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       ctx.clearRect(0, 0, width, height);
 
       // Apply Pan & Zoom
@@ -1415,6 +1616,34 @@
         this.drawArea2D(ctx, area);
       });
 
+      // Draw Pending Area Outline (modal open or created)
+      if (this.pendingAreaPoints && this.pendingAreaPoints.length >= 3) {
+        ctx.save();
+        ctx.beginPath();
+        ctx.moveTo(this.pendingAreaPoints[0].x, this.pendingAreaPoints[0].y);
+        for (let i = 1; i < this.pendingAreaPoints.length; i++) {
+          ctx.lineTo(this.pendingAreaPoints[i].x, this.pendingAreaPoints[i].y);
+        }
+        ctx.closePath();
+        ctx.fillStyle = 'rgba(16, 185, 129, 0.2)';
+        ctx.fill();
+        ctx.strokeStyle = '#059669';
+        ctx.lineWidth = 2.5 / this.zoom;
+        ctx.setLineDash([5 / this.zoom, 4 / this.zoom]);
+        ctx.stroke();
+
+        this.pendingAreaPoints.forEach(p => {
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, 4 / this.zoom, 0, Math.PI * 2);
+          ctx.fillStyle = '#ffffff';
+          ctx.strokeStyle = '#059669';
+          ctx.lineWidth = 2 / this.zoom;
+          ctx.fill();
+          ctx.stroke();
+        });
+        ctx.restore();
+      }
+
       // Draw Plants
       this.layout.plants.forEach(plant => {
         this.drawPlant2D(ctx, plant);
@@ -1426,7 +1655,7 @@
         ctx.globalAlpha = 0.6;
         ctx.beginPath();
         ctx.arc(this.dragHoverCoord.x, this.dragHoverCoord.y, 25, 0, Math.PI * 2);
-        ctx.fillStyle = '#2e7d32';
+        ctx.fillStyle = '#059669';
         ctx.fill();
         ctx.strokeStyle = '#ffffff';
         ctx.lineWidth = 3;
@@ -1442,10 +1671,29 @@
         for (let i = 1; i < this.freehandPoints.length; i++) {
           ctx.lineTo(this.freehandPoints[i].x, this.freehandPoints[i].y);
         }
-        ctx.strokeStyle = '#2e7d32';
+        ctx.closePath();
+        ctx.fillStyle = 'rgba(16, 185, 129, 0.15)';
+        ctx.fill();
+
+        ctx.beginPath();
+        ctx.moveTo(this.freehandPoints[0].x, this.freehandPoints[0].y);
+        for (let i = 1; i < this.freehandPoints.length; i++) {
+          ctx.lineTo(this.freehandPoints[i].x, this.freehandPoints[i].y);
+        }
+        ctx.strokeStyle = '#059669';
         ctx.lineWidth = 3 / this.zoom;
         ctx.lineCap = 'round';
         ctx.lineJoin = 'round';
+        ctx.stroke();
+
+        // Closing hint line back to start
+        const first = this.freehandPoints[0];
+        const last = this.freehandPoints[this.freehandPoints.length - 1];
+        ctx.beginPath();
+        ctx.setLineDash([4 / this.zoom, 4 / this.zoom]);
+        ctx.moveTo(last.x, last.y);
+        ctx.lineTo(first.x, first.y);
+        ctx.strokeStyle = '#059669';
         ctx.stroke();
         ctx.restore();
       }
@@ -1458,11 +1706,11 @@
         const rw = Math.abs(this.rectCurrent.x - this.rectStart.x);
         const rh = Math.abs(this.rectCurrent.y - this.rectStart.y);
 
-        ctx.fillStyle = 'rgba(46, 125, 50, 0.15)';
+        ctx.fillStyle = 'rgba(16, 185, 129, 0.15)';
         ctx.fillRect(rx, ry, rw, rh);
-        ctx.strokeStyle = '#2e7d32';
+        ctx.strokeStyle = '#059669';
         ctx.lineWidth = 2 / this.zoom;
-        ctx.setLineDash([6, 4]);
+        ctx.setLineDash([6 / this.zoom, 4 / this.zoom]);
         ctx.strokeRect(rx, ry, rw, rh);
         ctx.restore();
       }
@@ -1470,6 +1718,18 @@
       // Draw Active In-Progress Polygon
       if (this.activeTool === 'polygon' && this.polygonPoints.length > 0) {
         ctx.save();
+        if (this.polygonPoints.length >= 2) {
+          ctx.beginPath();
+          ctx.moveTo(this.polygonPoints[0].x, this.polygonPoints[0].y);
+          for (let i = 1; i < this.polygonPoints.length; i++) {
+            ctx.lineTo(this.polygonPoints[i].x, this.polygonPoints[i].y);
+          }
+          if (cursorHint) ctx.lineTo(cursorHint.x, cursorHint.y);
+          ctx.closePath();
+          ctx.fillStyle = 'rgba(16, 185, 129, 0.12)';
+          ctx.fill();
+        }
+
         ctx.beginPath();
         ctx.moveTo(this.polygonPoints[0].x, this.polygonPoints[0].y);
         for (let i = 1; i < this.polygonPoints.length; i++) {
@@ -1478,15 +1738,24 @@
         if (cursorHint) {
           ctx.lineTo(cursorHint.x, cursorHint.y);
         }
-        ctx.strokeStyle = '#2e7d32';
-        ctx.lineWidth = 2 / this.zoom;
+        ctx.strokeStyle = '#059669';
+        ctx.lineWidth = 2.5 / this.zoom;
         ctx.stroke();
 
         this.polygonPoints.forEach((pt, idx) => {
           ctx.beginPath();
-          ctx.arc(pt.x, pt.y, (idx === 0 ? 6 : 4) / this.zoom, 0, Math.PI * 2);
-          ctx.fillStyle = idx === 0 ? '#d32f2f' : '#2e7d32';
+          ctx.arc(pt.x, pt.y, (idx === 0 ? 8 : 6) / this.zoom, 0, Math.PI * 2);
+          ctx.fillStyle = idx === 0 ? '#ef4444' : '#ffffff';
           ctx.fill();
+          ctx.strokeStyle = idx === 0 ? '#b91c1c' : '#059669';
+          ctx.lineWidth = 2 / this.zoom;
+          ctx.stroke();
+
+          ctx.font = `bold ${8 / this.zoom}px sans-serif`;
+          ctx.fillStyle = idx === 0 ? '#ffffff' : '#059669';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText((idx + 1).toString(), pt.x, pt.y);
         });
         ctx.restore();
       }
@@ -1558,10 +1827,14 @@
         fillColor = 'rgba(224, 242, 254, 0.7)';
         strokeColor = '#0288d1';
         strokeWidth = 3;
+      } else if (type.includes('path') || type.includes('walkway')) {
+        fillColor = '#e2e8f0';
+        strokeColor = '#94a3b8';
+        strokeWidth = 2;
       } else {
-        fillColor = '#4e342e';
-        strokeColor = '#795548';
-        strokeWidth = 4;
+        fillColor = '#f3ece7';
+        strokeColor = '#8d6e63';
+        strokeWidth = 3;
       }
 
       ctx.shadowColor = 'rgba(0, 0, 0, 0.08)';
@@ -1574,17 +1847,42 @@
       ctx.shadowColor = 'transparent';
       this.drawAreaTexture2D(ctx, area, type);
 
-      ctx.strokeStyle = isHovered ? '#10b981' : (isSelected ? '#2e7d32' : strokeColor);
+      ctx.strokeStyle = isHovered ? '#10b981' : (isSelected ? '#059669' : strokeColor);
       ctx.lineWidth = (isSelected || isHovered ? strokeWidth + 2 : strokeWidth) / this.zoom;
       ctx.stroke();
 
       if (isSelected && this.activeMode === 'edit') {
+        const bounds = Geometry.polygonBounds(area.points);
+        ctx.save();
+        ctx.strokeStyle = '#059669';
+        ctx.lineWidth = 1.5 / this.zoom;
+        ctx.setLineDash([4 / this.zoom, 4 / this.zoom]);
+        ctx.strokeRect(bounds.minX - 4 / this.zoom, bounds.minY - 4 / this.zoom, bounds.width + 8 / this.zoom, bounds.height + 8 / this.zoom);
+        ctx.restore();
+
+        // 4 Corner resize handles
+        const corners = [
+          { id: 'nw', x: bounds.minX - 4 / this.zoom, y: bounds.minY - 4 / this.zoom },
+          { id: 'ne', x: bounds.maxX + 4 / this.zoom, y: bounds.minY - 4 / this.zoom },
+          { id: 'se', x: bounds.maxX + 4 / this.zoom, y: bounds.maxY + 4 / this.zoom },
+          { id: 'sw', x: bounds.minX - 4 / this.zoom, y: bounds.maxY + 4 / this.zoom }
+        ];
+        const cornerSize = 8 / this.zoom;
+        corners.forEach(c => {
+          ctx.fillStyle = '#ffffff';
+          ctx.strokeStyle = '#059669';
+          ctx.lineWidth = 2 / this.zoom;
+          ctx.fillRect(c.x - cornerSize / 2, c.y - cornerSize / 2, cornerSize, cornerSize);
+          ctx.strokeRect(c.x - cornerSize / 2, c.y - cornerSize / 2, cornerSize, cornerSize);
+        });
+
+        // Vertex handles
         area.points.forEach((p) => {
           ctx.beginPath();
           ctx.arc(p.x, p.y, 5 / this.zoom, 0, Math.PI * 2);
           ctx.fillStyle = '#ffffff';
           ctx.fill();
-          ctx.strokeStyle = '#2e7d32';
+          ctx.strokeStyle = '#059669';
           ctx.lineWidth = 2 / this.zoom;
           ctx.stroke();
         });
@@ -1911,17 +2209,30 @@
       };
       animate();
 
-      window.addEventListener('resize', () => {
-        if (!this.threeContainer || !this.threeCamera || !this.threeRenderer) return;
-        const r = this.threeContainer.getBoundingClientRect();
-        const asp = r.width / r.height;
-        this.threeCamera.left = -d * asp;
-        this.threeCamera.right = d * asp;
-        this.threeCamera.top = d;
-        this.threeCamera.bottom = -d;
+      window.addEventListener('resize', () => this.resizeThree());
+    }
+
+    resizeThree() {
+      if (!this.threeContainer || !this.threeCamera || !this.threeRenderer) return;
+      const r = this.threeContainer.getBoundingClientRect();
+      const width = Math.floor(r.width) || 800;
+      const height = Math.floor(r.height) || 600;
+      if (width === 0 || height === 0) return;
+      const asp = width / height;
+      const d = width < 600 ? 520 : 380;
+      this.threeCamera.left = -d * asp;
+      this.threeCamera.right = d * asp;
+      this.threeCamera.top = d;
+      this.threeCamera.bottom = -d;
+      this.threeCamera.updateProjectionMatrix();
+      this.threeRenderer.setSize(width, height);
+    }
+
+    zoom3D(factor) {
+      if (this.threeCamera) {
+        this.threeCamera.zoom = Math.max(0.2, Math.min(5.0, this.threeCamera.zoom * factor));
         this.threeCamera.updateProjectionMatrix();
-        this.threeRenderer.setSize(r.width, r.height);
-      });
+      }
     }
 
     renderThree3D() {
@@ -1945,54 +2256,109 @@
         const type = (area.area_type || 'balcony').toLowerCase();
         let extrudeDepth = 8;
         let color = 0xd7ccc8;
+        let isRaised = false;
 
         if (type.includes('raised')) {
           extrudeDepth = 22;
-          color = 0x8d5b4c;
+          color = 0x6d4c41; // Rich timber wood
+          isRaised = true;
         } else if (type.includes('balcony')) {
           extrudeDepth = 10;
           color = 0xd7ccc8;
         } else if (type.includes('patio')) {
           extrudeDepth = 6;
-          color = 0x94a3b8;
+          color = 0x94a3b8; // Slate stone pavers
         } else if (type.includes('lawn')) {
           extrudeDepth = 4;
           color = 0x4ade80;
         } else if (type.includes('greenhouse')) {
           extrudeDepth = 6;
           color = 0x38bdf8;
+        } else if (type.includes('path') || type.includes('walkway')) {
+          extrudeDepth = 2;
+          color = 0xd1d5db; // Fine gravel/flagstone
+        } else {
+          extrudeDepth = 3;
+          color = 0x452f26; // Garden soil/mulch
         }
 
         const extrudeSettings = {
           steps: 1,
           depth: extrudeDepth,
           bevelEnabled: true,
-          bevelThickness: 2,
-          bevelSize: 1.5,
+          bevelThickness: 1.5,
+          bevelSize: 1.2,
           bevelSegments: 2
         };
 
         const geom = new THREE.ExtrudeGeometry(shape, extrudeSettings);
         geom.rotateX(Math.PI / 2);
 
+        const areaGroup = new THREE.Group();
+
         const mat = new THREE.MeshStandardMaterial({
           color: color,
-          roughness: 0.8,
+          roughness: 0.85,
           metalness: 0.1
         });
 
         const mesh = new THREE.Mesh(geom, mat);
         mesh.castShadow = true;
         mesh.receiveShadow = true;
+        mesh.position.y = extrudeDepth;
+        areaGroup.add(mesh);
+
+        // Add rich soil surface layer inside raised beds
+        if (isRaised) {
+          const soilGeom = new THREE.ShapeGeometry(shape);
+          soilGeom.rotateX(Math.PI / 2);
+          const soilMat = new THREE.MeshStandardMaterial({
+            color: 0x271911,
+            roughness: 0.95
+          });
+          const soilMesh = new THREE.Mesh(soilGeom, soilMat);
+          soilMesh.position.y = extrudeDepth + 0.1;
+          soilMesh.receiveShadow = true;
+          areaGroup.add(soilMesh);
+        }
+
+        if (this.selectedAreaId === area.id) {
+          const wireGeo = new THREE.EdgesGeometry(geom);
+          const wireMat = new THREE.LineBasicMaterial({ color: 0x059669, linewidth: 2 });
+          const wire = new THREE.LineSegments(wireGeo, wireMat);
+          wire.position.y = extrudeDepth + 0.2;
+          areaGroup.add(wire);
+        }
+
+        areaGroup.userData = { type: 'area', areaId: area.id };
         mesh.userData = { type: 'area', areaId: area.id };
 
-        this.threeScene.add(mesh);
-        this.threeAreaMeshes[area.id] = mesh;
+        this.threeScene.add(areaGroup);
+        this.threeAreaMeshes[area.id] = areaGroup;
       });
 
       this.layout.plants.forEach(plant => {
         const group = new THREE.Group();
-        group.position.set(plant.x, 0, plant.y);
+
+        // Determine ground elevation from parent area
+        let groundY = 0;
+        for (const area of this.layout.areas) {
+          if (Geometry.pointInPolygon({ x: plant.x, y: plant.y }, area.points)) {
+            const t = (area.area_type || '').toLowerCase();
+            if (t.includes('raised')) groundY = 22;
+            else if (t.includes('balcony')) groundY = 10;
+            else if (t.includes('patio')) groundY = 6;
+            else if (t.includes('lawn')) groundY = 4;
+            else if (t.includes('path')) groundY = 2;
+            else groundY = 3;
+            break;
+          }
+        }
+
+        group.position.set(plant.x, groundY, plant.y);
+        const pScale = plant.scale || 1.0;
+        group.scale.set(pScale, pScale, pScale);
+        group.rotation.y = ((plant.rotation || 0) * Math.PI) / 180;
 
         const dbPlant = this.plants.find(p => p.id === plant.id);
         const condition = dbPlant ? (dbPlant.condition || { color: '#22c55e', icon: 'spa' }) : { color: '#22c55e', icon: 'spa' };
@@ -2001,157 +2367,298 @@
         let baseHeight = 0;
 
         if (isContainer) {
-          const potGeo = new THREE.CylinderGeometry(14, 10, 20, 16);
-          const potMat = new THREE.MeshStandardMaterial({ color: 0xc25e2e, roughness: 0.85 });
+          const potGeo = new THREE.CylinderGeometry(14, 10, 20, 18);
+          const potMat = new THREE.MeshStandardMaterial({ color: 0xb45309, roughness: 0.85 });
           const pot = new THREE.Mesh(potGeo, potMat);
           pot.position.y = 10;
           pot.castShadow = true;
           pot.receiveShadow = true;
           group.add(pot);
 
-          const soilGeo = new THREE.CylinderGeometry(13.5, 13.5, 2, 16);
-          const soilMat = new THREE.MeshStandardMaterial({ color: 0x3e2723, roughness: 0.95 });
+          const soilGeo = new THREE.CylinderGeometry(13.6, 13.6, 1.5, 18);
+          const soilMat = new THREE.MeshStandardMaterial({ color: 0x271911, roughness: 0.95 });
           const soil = new THREE.Mesh(soilGeo, soilMat);
-          soil.position.y = 19;
+          soil.position.y = 19.5;
           group.add(soil);
           baseHeight = 20;
         } else {
-          const moundGeo = new THREE.ConeGeometry(16, 6, 16);
-          const moundMat = new THREE.MeshStandardMaterial({ color: 0x4e342e, roughness: 0.95 });
+          const moundGeo = new THREE.CylinderGeometry(16, 18, 5, 16);
+          const moundMat = new THREE.MeshStandardMaterial({ color: 0x3e2723, roughness: 0.95 });
           const mound = new THREE.Mesh(moundGeo, moundMat);
-          mound.position.y = 3;
+          mound.position.y = 2.5;
           group.add(mound);
           baseHeight = 5;
         }
 
         const pType = plant.plant_type || 'herb';
-        this.buildProceduralPlant3D(group, pType, baseHeight);
+        this.buildProceduralPlant3D(group, pType, baseHeight, dbPlant);
 
-        // Halo ring
+        // Condition halo ring
         const ringGeo = new THREE.RingGeometry(18, 22, 32);
         const ringColor = new THREE.Color(condition.color || '#22c55e');
         const ringMat = new THREE.MeshBasicMaterial({
           color: ringColor,
           side: THREE.DoubleSide,
           transparent: true,
-          opacity: 0.85
+          opacity: 0.9
         });
         const ring = new THREE.Mesh(ringGeo, ringMat);
         ring.rotation.x = -Math.PI / 2;
-        ring.position.y = 0.5;
+        ring.position.y = baseHeight + 0.3;
         group.add(ring);
 
+        // Selection highlight ring
         if (this.selectedPlantId === plant.id) {
-          const selectRingGeo = new THREE.RingGeometry(24, 27, 32);
+          const selectRingGeo = new THREE.RingGeometry(24, 28, 32);
           const selectRingMat = new THREE.MeshBasicMaterial({ color: 0xffeb3b, side: THREE.DoubleSide });
           const selectRing = new THREE.Mesh(selectRingGeo, selectRingMat);
           selectRing.rotation.x = -Math.PI / 2;
-          selectRing.position.y = 0.8;
+          selectRing.position.y = baseHeight + 0.6;
           group.add(selectRing);
         }
 
         group.userData = { type: 'plant', plantId: plant.id };
+        group.traverse(c => {
+          if (c.isMesh) c.userData = { type: 'plant', plantId: plant.id };
+        });
+
         this.threeScene.add(group);
         this.threePlantMeshes[plant.id] = group;
       });
     }
 
-    buildProceduralPlant3D(group, type, baseHeight) {
-      if (type === 'herb') {
-        const leafMat = new THREE.MeshStandardMaterial({ color: 0x22c55e, roughness: 0.7 });
-        for (let i = 0; i < 7; i++) {
-          const angle = (i * Math.PI * 2) / 7;
-          const leafGeo = new THREE.SphereGeometry(6, 8, 8);
-          leafGeo.scale(0.8, 1.4, 0.4);
-          const leaf = new THREE.Mesh(leafGeo, leafMat);
-          leaf.position.set(Math.cos(angle) * 7, baseHeight + 10, Math.sin(angle) * 7);
-          leaf.rotation.x = 0.3;
-          leaf.rotation.y = angle;
-          leaf.castShadow = true;
-          group.add(leaf);
-        }
-      } else if (type === 'flower') {
-        const stemGeo = new THREE.CylinderGeometry(1.5, 2, 18, 8);
-        const stemMat = new THREE.MeshStandardMaterial({ color: 0x16a34a });
-        const stem = new THREE.Mesh(stemGeo, stemMat);
-        stem.position.y = baseHeight + 9;
-        stem.castShadow = true;
-        group.add(stem);
+    buildProceduralPlant3D(group, type, baseHeight, dbPlant = null) {
+      const name = (dbPlant ? dbPlant.name : '').toLowerCase();
+      const species = (dbPlant ? dbPlant.species : '').toLowerCase();
 
-        const petalGeo = new THREE.SphereGeometry(9, 12, 12);
-        const petalMat = new THREE.MeshStandardMaterial({ color: 0xd946ef, roughness: 0.6 });
-        const blossom = new THREE.Mesh(petalGeo, petalMat);
-        blossom.position.y = baseHeight + 20;
-        blossom.castShadow = true;
-        group.add(blossom);
+      if (name.includes('olive') || type === 'tree') {
+        // Olive Tree: gnarled woody trunk + silvery-green layered canopy + olive fruits
+        const trunkGeo = new THREE.CylinderGeometry(3.5, 5, 26, 10);
+        const trunkMat = new THREE.MeshStandardMaterial({ color: 0x78350f, roughness: 0.9 });
+        const trunk = new THREE.Mesh(trunkGeo, trunkMat);
+        trunk.position.y = baseHeight + 13;
+        trunk.castShadow = true;
+        group.add(trunk);
 
-        const centerGeo = new THREE.SphereGeometry(4, 8, 8);
-        const centerMat = new THREE.MeshStandardMaterial({ color: 0xfacc15 });
-        const center = new THREE.Mesh(centerGeo, centerMat);
-        center.position.y = baseHeight + 22;
-        group.add(center);
-      } else if (type === 'shrub') {
-        const shrubMat = new THREE.MeshStandardMaterial({ color: 0x15803d, roughness: 0.85 });
-        const offsets = [
-          [0, 14, 0, 11], [-6, 12, -4, 8], [6, 12, 4, 8], [4, 11, -5, 8], [-5, 11, 5, 8]
+        const canopyMat = new THREE.MeshStandardMaterial({ color: 0x4d7c0f, roughness: 0.75 });
+        const canopyOffsets = [
+          [0, 26, 0, 16], [-5, 29, -4, 12], [6, 28, 3, 13], [2, 36, -1, 14]
         ];
-        offsets.forEach(([ox, oy, oz, r]) => {
-          const sphGeo = new THREE.SphereGeometry(r, 10, 10);
-          const sph = new THREE.Mesh(sphGeo, shrubMat);
-          sph.position.set(ox, baseHeight + oy, oz);
-          sph.castShadow = true;
-          group.add(sph);
+        canopyOffsets.forEach(([ox, oy, oz, r]) => {
+          const cGeo = new THREE.SphereGeometry(r, 12, 10);
+          cGeo.scale(1.2, 0.9, 1.2);
+          const cMesh = new THREE.Mesh(cGeo, canopyMat);
+          cMesh.position.set(ox, baseHeight + oy, oz);
+          cMesh.castShadow = true;
+          group.add(cMesh);
         });
 
-        const berryMat = new THREE.MeshStandardMaterial({ color: 0x38bdf8 });
-        [[-4, 18, 3], [5, 16, -3], [2, 21, 1]].forEach(([bx, by, bz]) => {
-          const bGeo = new THREE.SphereGeometry(2, 6, 6);
-          const b = new THREE.Mesh(bGeo, berryMat);
-          b.position.set(bx, baseHeight + by, bz);
-          group.add(b);
+        // Small dark olives
+        const oliveMat = new THREE.MeshStandardMaterial({ color: 0x142807, roughness: 0.4 });
+        [[-4, 24, 6], [5, 25, -5], [-2, 32, -6], [7, 28, 5]].forEach(([ox, oy, oz]) => {
+          const oGeo = new THREE.SphereGeometry(1.6, 6, 6);
+          const oMesh = new THREE.Mesh(oGeo, oliveMat);
+          oMesh.position.set(ox, baseHeight + oy, oz);
+          group.add(oMesh);
         });
-      } else if (type === 'vegetable') {
-        const stakeGeo = new THREE.CylinderGeometry(1, 1, 30, 6);
+
+      } else if (name.includes('tomato')) {
+        // Climbing tomato stake + lush vines + bright red tomatoes
+        const stakeGeo = new THREE.CylinderGeometry(1.2, 1.2, 36, 8);
         const stakeMat = new THREE.MeshStandardMaterial({ color: 0x854d0e });
         const stake = new THREE.Mesh(stakeGeo, stakeMat);
-        stake.position.y = baseHeight + 15;
+        stake.position.y = baseHeight + 18;
+        stake.castShadow = true;
         group.add(stake);
 
-        const leafMat = new THREE.MeshStandardMaterial({ color: 0x22c55e });
-        for (let j = 0; j < 5; j++) {
+        const leafMat = new THREE.MeshStandardMaterial({ color: 0x16a34a, roughness: 0.65 });
+        for (let j = 0; j < 7; j++) {
           const lGeo = new THREE.SphereGeometry(6, 8, 8);
-          lGeo.scale(1.3, 0.4, 1);
+          lGeo.scale(1.4, 0.5, 1);
           const l = new THREE.Mesh(lGeo, leafMat);
-          l.position.set((j % 2 === 0 ? 5 : -5), baseHeight + 8 + j * 4, 0);
+          const ang = j * 1.1;
+          l.position.set(Math.cos(ang) * 6, baseHeight + 8 + j * 4, Math.sin(ang) * 6);
+          l.castShadow = true;
           group.add(l);
         }
 
-        const tomatoMat = new THREE.MeshStandardMaterial({ color: 0xef4444, roughness: 0.4 });
-        [[-4, baseHeight + 12, 3], [4, baseHeight + 16, -2]].forEach(([tx, ty, tz]) => {
-          const tGeo = new THREE.SphereGeometry(4, 10, 10);
+        const tomatoMat = new THREE.MeshStandardMaterial({ color: 0xef4444, roughness: 0.35 });
+        [[-5, baseHeight + 14, 4], [4, baseHeight + 19, -3], [-3, baseHeight + 25, -4], [5, baseHeight + 12, 2]].forEach(([tx, ty, tz]) => {
+          const tGeo = new THREE.SphereGeometry(3.8, 10, 10);
           const t = new THREE.Mesh(tGeo, tomatoMat);
           t.position.set(tx, ty, tz);
           t.castShadow = true;
           group.add(t);
         });
-      } else if (type === 'tree') {
-        const trunkGeo = new THREE.CylinderGeometry(3, 4.5, 24, 8);
-        const trunkMat = new THREE.MeshStandardMaterial({ color: 0x78350f, roughness: 0.9 });
-        const trunk = new THREE.Mesh(trunkGeo, trunkMat);
-        trunk.position.y = baseHeight + 12;
-        trunk.castShadow = true;
-        group.add(trunk);
 
-        const canopyMat = new THREE.MeshStandardMaterial({ color: 0x166534, roughness: 0.8 });
-        const canopy1 = new THREE.Mesh(new THREE.ConeGeometry(18, 22, 10), canopyMat);
-        canopy1.position.y = baseHeight + 28;
-        canopy1.castShadow = true;
-        group.add(canopy1);
+      } else if (name.includes('lettuce')) {
+        // Butterhead Lettuce: dense layered rosette
+        const outerMat = new THREE.MeshStandardMaterial({ color: 0x4ade80, roughness: 0.7 });
+        const innerMat = new THREE.MeshStandardMaterial({ color: 0x86efac, roughness: 0.6 });
 
-        const canopy2 = new THREE.Mesh(new THREE.ConeGeometry(14, 18, 10), canopyMat);
-        canopy2.position.y = baseHeight + 38;
-        canopy2.castShadow = true;
-        group.add(canopy2);
+        for (let i = 0; i < 8; i++) {
+          const angle = (i * Math.PI * 2) / 8;
+          const lGeo = new THREE.SphereGeometry(7, 8, 8);
+          lGeo.scale(1.3, 0.35, 0.9);
+          const l = new THREE.Mesh(lGeo, outerMat);
+          l.position.set(Math.cos(angle) * 7, baseHeight + 4, Math.sin(angle) * 7);
+          l.rotation.y = angle;
+          l.rotation.z = 0.2;
+          l.castShadow = true;
+          group.add(l);
+        }
+        for (let i = 0; i < 5; i++) {
+          const angle = (i * Math.PI * 2) / 5 + 0.3;
+          const lGeo = new THREE.SphereGeometry(5.5, 8, 8);
+          lGeo.scale(1.1, 0.45, 0.8);
+          const l = new THREE.Mesh(lGeo, innerMat);
+          l.position.set(Math.cos(angle) * 4, baseHeight + 7, Math.sin(angle) * 4);
+          l.rotation.y = angle;
+          l.castShadow = true;
+          group.add(l);
+        }
+        const center = new THREE.Mesh(new THREE.SphereGeometry(4, 8, 8), innerMat);
+        center.position.y = baseHeight + 8;
+        group.add(center);
+
+      } else if (name.includes('carrot')) {
+        // Nantes Carrots: feathery fronds + orange root tops
+        const foliageMat = new THREE.MeshStandardMaterial({ color: 0x16a34a, roughness: 0.6 });
+        for (let i = 0; i < 7; i++) {
+          const angle = (i * Math.PI * 2) / 7;
+          const frondGeo = new THREE.ConeGeometry(3, 16, 6);
+          const frond = new THREE.Mesh(frondGeo, foliageMat);
+          frond.position.set(Math.cos(angle) * 4, baseHeight + 9, Math.sin(angle) * 4);
+          frond.rotation.z = Math.cos(angle) * 0.35;
+          frond.rotation.x = Math.sin(angle) * 0.35;
+          frond.castShadow = true;
+          group.add(frond);
+        }
+
+        const orangeMat = new THREE.MeshStandardMaterial({ color: 0xf97316, roughness: 0.5 });
+        [[-2, baseHeight + 1.5, -2], [3, baseHeight + 1.5, 2], [-1, baseHeight + 1.5, 3]].forEach(([cx, cy, cz]) => {
+          const root = new THREE.Mesh(new THREE.CylinderGeometry(2.5, 1.8, 4, 8), orangeMat);
+          root.position.set(cx, cy, cz);
+          group.add(root);
+        });
+
+      } else if (name.includes('lavender')) {
+        // English Lavender: grey-green foliage mound + purple flower spikes
+        const foliageMat = new THREE.MeshStandardMaterial({ color: 0x65a30d, roughness: 0.8 });
+        const baseMound = new THREE.Mesh(new THREE.SphereGeometry(11, 10, 8), foliageMat);
+        baseMound.scale.set(1.1, 0.6, 1.1);
+        baseMound.position.y = baseHeight + 5;
+        baseMound.castShadow = true;
+        group.add(baseMound);
+
+        const flowerMat = new THREE.MeshStandardMaterial({ color: 0x8b5cf6, roughness: 0.5 });
+        const stemMat = new THREE.MeshStandardMaterial({ color: 0x4d7c0f });
+        for (let i = 0; i < 8; i++) {
+          const angle = (i * Math.PI * 2) / 8;
+          const dist = 3 + (i % 3) * 2;
+          const sx = Math.cos(angle) * dist;
+          const sz = Math.sin(angle) * dist;
+
+          const stem = new THREE.Mesh(new THREE.CylinderGeometry(0.6, 0.6, 16, 6), stemMat);
+          stem.position.set(sx, baseHeight + 14, sz);
+          group.add(stem);
+
+          const spike = new THREE.Mesh(new THREE.CylinderGeometry(1.5, 1.8, 7, 8), flowerMat);
+          spike.position.set(sx, baseHeight + 20, sz);
+          spike.castShadow = true;
+          group.add(spike);
+        }
+
+      } else if (name.includes('rosemary')) {
+        // Tuscan Rosemary: woody branching stems + needle clusters
+        const foliageMat = new THREE.MeshStandardMaterial({ color: 0x15803d, roughness: 0.8 });
+        for (let i = 0; i < 6; i++) {
+          const angle = (i * Math.PI * 2) / 6;
+          const sprigGeo = new THREE.ConeGeometry(4, 20, 6);
+          const sprig = new THREE.Mesh(sprigGeo, foliageMat);
+          sprig.position.set(Math.cos(angle) * 4, baseHeight + 10, Math.sin(angle) * 4);
+          sprig.rotation.z = Math.cos(angle) * 0.25;
+          sprig.rotation.x = Math.sin(angle) * 0.25;
+          sprig.castShadow = true;
+          group.add(sprig);
+        }
+        const center = new THREE.Mesh(new THREE.ConeGeometry(5, 22, 6), foliageMat);
+        center.position.y = baseHeight + 11;
+        center.castShadow = true;
+        group.add(center);
+
+      } else if (name.includes('hydrangea')) {
+        // French Hydrangea: dark green shrub + 3 large rounded blue pom-poms
+        const shrubMat = new THREE.MeshStandardMaterial({ color: 0x14532d, roughness: 0.8 });
+        const bush = new THREE.Mesh(new THREE.SphereGeometry(14, 10, 8), shrubMat);
+        bush.position.y = baseHeight + 9;
+        bush.castShadow = true;
+        group.add(bush);
+
+        const flowerMat = new THREE.MeshStandardMaterial({ color: 0x38bdf8, roughness: 0.4 });
+        [[-6, baseHeight + 17, 3], [5, baseHeight + 18, -2], [1, baseHeight + 21, 4]].forEach(([hx, hy, hz]) => {
+          const head = new THREE.Mesh(new THREE.SphereGeometry(7, 10, 10), flowerMat);
+          head.position.set(hx, hy, hz);
+          head.castShadow = true;
+          group.add(head);
+        });
+
+      } else if (name.includes('fern')) {
+        // Ostrich Ferns: graceful arching fronds radiating outwards
+        const frondMat = new THREE.MeshStandardMaterial({ color: 0x22c55e, roughness: 0.7 });
+        for (let i = 0; i < 9; i++) {
+          const angle = (i * Math.PI * 2) / 9;
+          const frondGeo = new THREE.ConeGeometry(3.5, 22, 6);
+          frondGeo.scale(1.3, 1, 0.4);
+          const frond = new THREE.Mesh(frondGeo, frondMat);
+          frond.position.set(Math.cos(angle) * 6, baseHeight + 10, Math.sin(angle) * 6);
+          frond.rotation.y = angle;
+          frond.rotation.x = 0.45;
+          frond.castShadow = true;
+          group.add(frond);
+        }
+
+      } else if (type === 'herb' || name.includes('basil') || name.includes('mint') || name.includes('parsley')) {
+        // General herb / Basil / Mint / Parsley
+        const leafMat = new THREE.MeshStandardMaterial({ color: 0x16a34a, roughness: 0.65 });
+        for (let i = 0; i < 7; i++) {
+          const angle = (i * Math.PI * 2) / 7;
+          const leafGeo = new THREE.SphereGeometry(6, 8, 8);
+          leafGeo.scale(0.9, 1.4, 0.4);
+          const leaf = new THREE.Mesh(leafGeo, leafMat);
+          leaf.position.set(Math.cos(angle) * 7, baseHeight + 9, Math.sin(angle) * 7);
+          leaf.rotation.x = 0.3;
+          leaf.rotation.y = angle;
+          leaf.castShadow = true;
+          group.add(leaf);
+        }
+        const topLeaf = new THREE.Mesh(new THREE.SphereGeometry(5, 8, 8), leafMat);
+        topLeaf.position.y = baseHeight + 14;
+        group.add(topLeaf);
+
+      } else if (type === 'flower') {
+        const stemMat = new THREE.MeshStandardMaterial({ color: 0x16a34a });
+        const stem = new THREE.Mesh(new THREE.CylinderGeometry(1.2, 1.5, 18, 6), stemMat);
+        stem.position.y = baseHeight + 9;
+        stem.castShadow = true;
+        group.add(stem);
+
+        const blossom = new THREE.Mesh(new THREE.SphereGeometry(8, 10, 10), new THREE.MeshStandardMaterial({ color: 0xec4899, roughness: 0.5 }));
+        blossom.position.y = baseHeight + 19;
+        blossom.castShadow = true;
+        group.add(blossom);
+
+        const center = new THREE.Mesh(new THREE.SphereGeometry(3.5, 8, 8), new THREE.MeshStandardMaterial({ color: 0xfacc15 }));
+        center.position.y = baseHeight + 21;
+        group.add(center);
+
+      } else {
+        // Generic shrub
+        const shrubMat = new THREE.MeshStandardMaterial({ color: 0x15803d, roughness: 0.85 });
+        const sph = new THREE.Mesh(new THREE.SphereGeometry(12, 10, 10), shrubMat);
+        sph.position.y = baseHeight + 12;
+        sph.castShadow = true;
+        group.add(sph);
       }
     }
 
@@ -2206,7 +2713,7 @@
         }
         this.renderCanvas2D();
       } else if (this.threeControls && this.threeCamera) {
-        let cx = 200, cz = 150;
+        let cx = 450, cz = 350;
         if (this.layout.areas.length > 0) {
           let sumX = 0, sumZ = 0;
           this.layout.areas.forEach(a => {
@@ -2218,7 +2725,7 @@
           cz = sumZ / this.layout.areas.length;
         }
         this.threeControls.target.set(cx, 0, cz);
-        this.threeCamera.position.set(cx + 350, 400, cz + 350);
+        this.threeCamera.position.set(cx + 350, 420, cz + 350);
         this.threeControls.update();
       }
     }
@@ -2643,7 +3150,9 @@
         if (btn2D) btn2D.classList.remove('active');
         if (btn3D) btn3D.classList.add('active');
         toolbar2DOnly.forEach(el => el.style.display = 'none');
+        this.resizeThree();
         this.renderThree3D();
+        this.fitToGarden();
       }
     }
 
@@ -2669,10 +3178,30 @@
       const activeBtn = document.getElementById(`btn-tool-${tool}`);
       if (activeBtn) activeBtn.classList.add('active');
 
+      const polyControls = document.getElementById('polygon-drawing-controls');
+      if (polyControls) {
+        polyControls.style.display = tool === 'polygon' ? 'flex' : 'none';
+        const vertexCounter = document.getElementById('poly-point-count');
+        if (vertexCounter) vertexCounter.textContent = '0';
+      }
+      if (tool !== 'polygon') {
+        this.polygonPoints = [];
+      }
+
       if (tool !== 'select') {
         this.clearSelection();
       }
       this.renderCanvas2D();
+    }
+
+    deleteSelected() {
+      if (this.selectedPlantId) {
+        this.deletePlant(this.selectedPlantId);
+      } else if (this.selectedAreaId) {
+        this.deleteArea(this.selectedAreaId);
+      } else {
+        this.showToast("Select a plant or growing area first to delete it.");
+      }
     }
 
     // --- List View Synchronization ---
@@ -2759,17 +3288,35 @@
       bind('btn-tool-freehand', () => this.setTool('freehand'));
       bind('btn-tool-rect', () => this.setTool('rect'));
       bind('btn-tool-polygon', () => this.setTool('polygon'));
+      bind('btn-tool-delete', () => this.deleteSelected());
 
       bind('btn-tool-undo', () => this.undo());
       bind('btn-tool-redo', () => this.redo());
 
+      bind('btn-load-example', () => this.loadExampleGarden());
+      bind('btn-finish-polygon', () => this.finishPolygonArea());
+      bind('btn-cancel-polygon', () => this.cancelPolygon());
+
+      const gardenSelect = document.getElementById('select-active-garden');
+      if (gardenSelect) {
+        gardenSelect.addEventListener('change', (e) => this.switchGarden(e.target.value));
+      }
+
       bind('btn-zoom-in', () => {
-        this.zoom = Math.min(3.0, this.zoom * 1.2);
-        this.renderCanvas2D();
+        if (this.activeDimension === '2d') {
+          this.zoom = Math.min(3.0, this.zoom * 1.2);
+          this.renderCanvas2D();
+        } else {
+          this.zoom3D(1.25);
+        }
       });
       bind('btn-zoom-out', () => {
-        this.zoom = Math.max(0.3, this.zoom / 1.2);
-        this.renderCanvas2D();
+        if (this.activeDimension === '2d') {
+          this.zoom = Math.max(0.3, this.zoom / 1.2);
+          this.renderCanvas2D();
+        } else {
+          this.zoom3D(0.8);
+        }
       });
       bind('btn-fit-garden', () => this.fitToGarden());
 
@@ -2786,13 +3333,60 @@
 
       bind('btn-toggle-library', () => {
         const lib = document.getElementById('garden-library-drawer');
-        if (lib) lib.classList.toggle('collapsed');
+        if (lib) {
+          if (window.innerWidth <= 768) {
+            lib.classList.toggle('open-mobile');
+          } else {
+            lib.classList.toggle('collapsed');
+          }
+        }
       });
+
+      const searchInput = document.getElementById('library-search-input');
+      if (searchInput) {
+        searchInput.addEventListener('input', (e) => {
+          this.librarySearchQuery = (e.target.value || '').trim().toLowerCase();
+          this.renderLibrary();
+        });
+      }
 
       const areaSelect = document.getElementById('filter-area-select');
       if (areaSelect) {
         areaSelect.addEventListener('change', (e) => this.setAreaFilter(e.target.value));
       }
+
+      // Global keyboard shortcuts
+      window.addEventListener('keydown', (e) => {
+        if (['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName)) return;
+
+        if ((e.ctrlKey || e.metaKey) && (e.key === 'z' || e.key === 'Z')) {
+          if (e.shiftKey) {
+            e.preventDefault();
+            this.redo();
+          } else {
+            e.preventDefault();
+            this.undo();
+          }
+        } else if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || e.key === 'Y')) {
+          e.preventDefault();
+          this.redo();
+        } else if (e.key === 'Delete' || e.key === 'Backspace') {
+          if (this.selectedPlantId || this.selectedAreaId) {
+            e.preventDefault();
+            this.deleteSelected();
+          }
+        } else if (e.key === 'Escape') {
+          if (this.activeTool === 'polygon') {
+            this.cancelPolygon();
+          } else {
+            this.clearSelection();
+          }
+        } else if (e.key === 'Enter') {
+          if (this.activeTool === 'polygon' && this.polygonPoints.length >= 3) {
+            this.finishPolygonArea();
+          }
+        }
+      });
     }
   }
 

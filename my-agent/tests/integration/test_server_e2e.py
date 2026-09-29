@@ -38,9 +38,12 @@ from a2a.types import (
     Part,
     Role,
     SendMessageRequest,
-    StreamResponse,
     TaskState,
 )
+try:
+    from a2a.types import StreamResponse
+except ImportError:
+    StreamResponse = object
 from requests.exceptions import RequestException
 
 # Configure logging

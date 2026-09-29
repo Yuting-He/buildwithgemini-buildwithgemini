@@ -4,10 +4,23 @@ Bridges SQLite storage, the weather adapter, deterministic rules, and the LLM.
 """
 
 import uuid
+import re
+import base64
+import asyncio
+import logging
 from datetime import datetime, timezone, timedelta
 from typing import Dict, Any, Optional, List
+from google import genai
+from google.genai import types
+from google.cloud import storage
+from google.adk.tools import ToolContext
+
 from . import gardening_store as store
 from .weather_adapter import WeatherAdapter
+
+# Hardcoded constants for Cloud Storage & Vertex AI
+GCS_BUCKET_NAME = "bwg3-qwiklabs-gcp-04-c7b2618a365a"
+GCP_PROJECT_ID = "qwiklabs-gcp-04-c7b2618a365a"
 
 def get_garden_summary(garden_id: Optional[str] = None) -> Dict[str, Any]:
     """
@@ -38,11 +51,16 @@ def get_garden_summary(garden_id: Optional[str] = None) -> Dict[str, Any]:
         )
 
     areas = store.list_growing_areas(garden["id"])
-    plants = store.list_plants()
+    area_ids = {a["id"] for a in areas}
+    all_plants = store.list_plants()
+    plants = [p for p in all_plants if p.get("area_id") in area_ids]
     for p in plants:
         p["condition"] = store.evaluate_plant_condition(p["id"])
-    recent_journal = store.list_journal_entries(limit=10)
-    pending_tasks = store.list_tasks(status="pending")
+    plant_ids = {p["id"] for p in plants}
+    all_journal = store.list_journal_entries(limit=50)
+    recent_journal = [j for j in all_journal if j.get("plant_id") in plant_ids or j.get("area_id") in area_ids][:10]
+    all_tasks = store.list_tasks(status="pending")
+    pending_tasks = [t for t in all_tasks if t.get("plant_id") in plant_ids or t.get("area_id") in area_ids]
 
     return {
         "garden": garden,
@@ -767,4 +785,137 @@ def find_nearby_places(
             }
     except Exception as exc:
         return {"status": "error", "message": f"Places API request failed: {exc}"}
+
+
+async def generate_plant_video(
+    plant_name: str,
+    topic: Optional[str] = "growth time-lapse",
+    aspect_ratio: Optional[str] = "16:9",
+    tool_context: Optional[ToolContext] = None
+) -> Dict[str, Any]:
+    """
+    Generates a short botanical, time-lapse, or plant care video for an item in the garden
+    using Google's Omni model (gemini-omni-flash-preview) in the global region.
+
+    The video bytes are handled completely in-memory:
+    1. Saved to the session artifacts panel using tool_context.save_artifact.
+    2. Uploaded to the public Cloud Storage bucket (bwg3-qwiklabs-gcp-04-c7b2618a365a)
+       and the public https URL is returned.
+    Does NOT write the video to local disk or return a local file path.
+
+    Args:
+        plant_name: Name or species of the plant or garden item (e.g., 'Tomato', 'Basil', 'Lavender', 'Hydrangea').
+        topic: Specific scene or theme to visualize (e.g. 'growth time-lapse', 'pruning technique demo', 'botanical watering and morning dew', 'sunlight and blooming flowers').
+        aspect_ratio: Video aspect ratio ('16:9' or '9:16'). Defaults to '16:9'.
+        tool_context: Injected ADK ToolContext used to save the video artifact into the active session.
+
+    Returns:
+        Dict containing status, plant_name, topic, artifact_filename, artifact_saved, and public_url.
+    """
+    clean_name = plant_name.strip() if plant_name else "Garden Plant"
+    clean_topic = (topic or "growth time-lapse").strip()
+    valid_aspect_ratio = aspect_ratio if aspect_ratio in ("16:9", "9:16") else "16:9"
+
+    # Descriptive, vivid botanical video generation prompt
+    prompt = (
+        f"A cinematic, high-definition botanical video of {clean_name}: {clean_topic}. "
+        f"Natural garden sunlight, healthy foliage, vivid colors, smooth motion, high detail."
+    )
+
+    try:
+        # 1. Generate video using Gemini Omni model on global Vertex AI endpoint
+        client = genai.Client(
+            vertexai=True,
+            project=GCP_PROJECT_ID,
+            location="global"
+        )
+
+        interaction = await asyncio.to_thread(
+            client.interactions.create,
+            model="gemini-omni-flash-preview",
+            input=prompt,
+            response_format={
+                "type": "video",
+                "aspect_ratio": valid_aspect_ratio
+            }
+        )
+
+        # 2. Extract in-memory video bytes from model response
+        video_bytes = None
+        if hasattr(interaction, "output_video") and interaction.output_video:
+            if getattr(interaction.output_video, "data", None):
+                video_bytes = base64.b64decode(interaction.output_video.data)
+
+        if not video_bytes and hasattr(interaction, "steps"):
+            for step in getattr(interaction, "steps", []):
+                for content in getattr(step, "content", []):
+                    if getattr(content, "type", None) == "video" and getattr(content, "data", None):
+                        video_bytes = base64.b64decode(content.data)
+                        break
+
+        if not video_bytes:
+            return {
+                "status": "error",
+                "message": "The Omni model completed the interaction, but no video bytes were returned."
+            }
+
+        # 3. Create unique artifact and object names
+        safe_slug = re.sub(r"[^a-zA-Z0-9_-]", "_", clean_name.lower()) or "plant_item"
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        artifact_filename = f"{safe_slug}_{timestamp}.mp4"
+        gcs_object_name = f"videos/{safe_slug}_{timestamp}.mp4"
+
+        # 4. Upload in-memory video bytes to public Cloud Storage bucket
+        storage_client = storage.Client(project=GCP_PROJECT_ID)
+        bucket = storage_client.bucket(GCS_BUCKET_NAME)
+        blob = bucket.blob(gcs_object_name)
+        blob.upload_from_string(video_bytes, content_type="video/mp4")
+        public_url = f"https://storage.googleapis.com/{GCS_BUCKET_NAME}/{gcs_object_name}"
+
+        # 5. Save video artifact via tool_context into session
+        artifact_saved = False
+        if tool_context is not None:
+            try:
+                artifact_part = types.Part.from_bytes(data=video_bytes, mime_type="video/mp4")
+                await tool_context.save_artifact(
+                    filename=artifact_filename,
+                    artifact=artifact_part,
+                    custom_metadata={
+                        "model": "gemini-omni-flash-preview",
+                        "region": "global",
+                        "plant_name": clean_name,
+                        "topic": clean_topic,
+                        "public_url": public_url,
+                        "aspect_ratio": valid_aspect_ratio
+                    }
+                )
+                artifact_saved = True
+            except Exception as art_err:
+                logging.getLogger(__name__).warning("Failed to save artifact to tool_context: %s", art_err)
+
+        return {
+            "status": "success",
+            "plant_name": clean_name,
+            "topic": clean_topic,
+            "artifact_filename": artifact_filename,
+            "artifact_saved": artifact_saved,
+            "public_url": public_url,
+            "duration": "5s",
+            "aspect_ratio": valid_aspect_ratio,
+            "message": (
+                f"Generated short botanical video for '{clean_name}' ({clean_topic}) using gemini-omni-flash-preview. "
+                f"Saved to session artifacts as '{artifact_filename}' and uploaded to public Cloud Storage: {public_url}"
+            )
+        }
+
+    except Exception as exc:
+        logging.getLogger(__name__).error("Video generation failed: %s", exc, exc_info=True)
+        return {
+            "status": "error",
+            "message": f"Failed to generate video using gemini-omni-flash-preview: {exc}"
+        }
+
+
+# Expose alias for flexible agent discovery
+generate_gardening_video = generate_plant_video
 

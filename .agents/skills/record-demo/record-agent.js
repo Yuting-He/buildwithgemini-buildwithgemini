@@ -69,7 +69,10 @@ function loadChromium() {
   }
 }
 
-function ensureBrowserInstalled() {
+function ensureBrowserInstalled(chromium) {
+  try {
+    if (chromium && fs.existsSync(chromium.executablePath())) return;
+  } catch (e) {}
   // Downloads the Chromium binary into the shared per-user cache if it isn't
   // already there. Idempotent and a no-op once installed, so it's cheap on
   // repeat runs (and instant if the lab image pre-installed it).
@@ -349,7 +352,7 @@ Options:
 (async () => {
   const options = parseArgs();
   const chromium = loadChromium();
-  ensureBrowserInstalled();
+  ensureBrowserInstalled(chromium);
   const assets = options.frame ? loadFrameAssets() : null;
 
   console.log('--- Agent UI Recording Tool ---');
@@ -394,12 +397,13 @@ Options:
   // Selector covers the custom frontend (<input id="input">) and the ADK dev UI
   // (<textarea placeholder="Type a message...">), plus generic chat inputs.
   const inputSelector = [
-    '#input',
-    'textarea[placeholder="Type a message..."]',
-    'textarea',
-    'input[type="text"]',
-    'input:not([type])',
-    '[contenteditable="true"]',
+    '#input:visible',
+    '#chat-input:visible',
+    'textarea[placeholder="Type a message..."]:visible',
+    'textarea:visible',
+    'input[type="text"]:visible',
+    'input:not([type]):visible',
+    '[contenteditable="true"]:visible',
   ].join(', ');
 
   try {

@@ -1,198 +1,179 @@
+# 🌿 FloraGuide — Personal Context-Aware Gardening Assistant
+
+FloraGuide is a context-aware gardening assistant built with the **Google Agent Development Kit (ADK)** and **agents-cli**. It models your specific growing areas and microclimates (sheltered balconies, patios, raised beds, indoor setups), pulls real-time environmental conditions, maintains plant histories and observation logs, and delivers personalized care recommendations and travel plans.
+
 <div align="center">
 
-<img src="assets/build-with-gemini-banner.png" alt="Build with Gemini" width="100%" />
+![FloraGuide Demo](./demo.gif)
 
-# 🚀 Build with Gemini · Track 3
-
-### The starter kit for Track 3 of the Build with Gemini World Tour, and a showcase of what participants built with it.
-
-Clone this repo, open [Antigravity](https://antigravity.google), and build your own agent-first app on Google Cloud. Every project in the [gallery below](#-featured-projects) was built the same way: prototyped with Antigravity and `agents-cli`, equipped with Memory, tools, and storage, deployed to Agent Platform, and given a face on Cloud Run.
-
-<br/>
-
-![Build with Gemini](https://img.shields.io/badge/Build%20with%20Gemini-World%20Tour-4285F4?logo=google&logoColor=white)
-![Track 3](https://img.shields.io/badge/Track%203-Agent--First%20Apps-EA4335)
-![Google Cloud](https://img.shields.io/badge/Google%20Cloud-Agent%20Platform-4285F4?logo=googlecloud&logoColor=white)
-![Built with ADK](https://img.shields.io/badge/Built%20with-ADK%20%2B%20agents--cli-34A853)
-![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen)
-![Projects](https://img.shields.io/badge/Projects-8-blue)
-
-<sub>📖 <a href="https://cszhu.github.io/build-with-gemini/">Lab Guide</a> · 🛠️ <a href="https://google.github.io/agents-cli/guide/getting-started/">agents-cli</a> · 🤖 <a href="https://google.github.io/adk-docs/">ADK</a></sub>
+*FloraGuide in action: synthesizing live weather with sheltered container microclimates, querying Cloud Firestore, and rendering structured A2UI cards.*
 
 </div>
 
 ---
 
-## 📚 Table of Contents
+## 🎯 What FloraGuide Does
 
-- [🧩 Anatomy of a Track 3 Project](#-anatomy-of-a-track-3-project)
-- [📂 Featured Projects](#-featured-projects)
-  - [🛍️ Commerce & Marketplace Agents](#️-commerce--marketplace-agents)
-  - [🍳 Food & Recipe Agents](#-food--recipe-agents)
-  - [✈️ Travel & Local Agents](#️-travel--local-agents)
-  - [💪 Health, Fitness & Wellness Agents](#-health-fitness--wellness-agents)
-  - [📚 Learning & Knowledge Agents](#-learning--knowledge-agents)
-  - [🎨 Creative & Media Agents](#-creative--media-agents)
-  - [🏢 Productivity & Enterprise Agents](#-productivity--enterprise-agents)
-  - [🧪 Experimental & Other](#-experimental--other)
-- [🧠 What's in this Repo](#-whats-in-this-repo)
-- [🧰 Build Your Own](#-build-your-own)
-- [📚 Resources](#-resources)
-- [🤝 Contributing](#-contributing)
-- [📄 License](#-license)
+- **Microclimate & Shelter Awareness:** Differentiates between open ground and sheltered environments (balconies with overhangs, covered patios, greenhouses). When rain is forecast, FloraGuide reminds you that sheltered pots receive zero ambient precipitation and still need manual watering.
+- **Observation-Driven Care:** Real physical observations ("soil damp at 2 inches", "leaves drooping") take precedence over weather forecasts to prevent root rot or dehydration.
+- **Cross-Session Memory & Allergy Safety:** Remembers user preferences, physical garden constraints (e.g., heavy pots that cannot be moved, water hose reach), and health sensitivities/allergies across sessions, proactively preventing hazardous plant or chemical recommendations.
+- **Visual Garden Planner & Digital Twin:** An interactive 2D canvas planner and 3D visualizer for garden zones, accompanied by an instant 1-click **Load Example Garden** (Sunny Patio, Raised Vegetable Beds, Herb Corner, and Shaded Flower Bed).
+- **Travel Absence Planning:** Generates a structured 3-phase absence plan (pre-departure hardening, absence care, and return inspections) with risk stratification by container volume and exposure.
+- **Botanical Video Generation:** Uses Google Omni to create cinematic time-lapse and plant care videos, streaming artifacts directly to Cloud Storage and the session panel.
 
 ---
 
-## 🧩 Anatomy of a Track 3 Project
+## 🏗️ Architecture & Wired Google Cloud Services
 
-Every app in this collection is built from the same set of Google Cloud building blocks introduced in the lab. Once you understand this shape, you can read any project here at a glance:
+The capabilities below are fully wired and implemented in `app/agent.py` and `app/gardening_tools.py`:
 
-| Layer | What it does | Powered by |
-|---|---|---|
-| 🤖 **The Agent** | The core reasoning loop | [ADK](https://google.github.io/adk-docs/) + [`agents-cli`](https://google.github.io/agents-cli/guide/getting-started/), scaffolded with [Antigravity](https://antigravity.google) |
-| 🧠 **Memory** | Remembers facts across sessions | [Agent Platform Memory Bank](https://docs.cloud.google.com/gemini-enterprise-agent-platform/scale/memory-bank) |
-| 🗄️ **Structured data** | Inventory, records, lists | [Firestore](https://console.cloud.google.com/firestore) |
-| 🖼️ **Files & blobs** | Images, media, assets | [Cloud Storage](https://console.cloud.google.com/storage) |
-| 🔧 **Tools** | Take real actions and fetch real data | ADK function tools |
-| 🎨 **Media generation** | Creates images (and video) on demand | `gemini-3.1-flash-lite-image` (Nano Banana 2 Lite) · Omni (video) |
-| 🧪 **Code sandbox** | Safely runs generated code | Agent Platform code execution |
-| 🪟 **Agent-first UI** | Cards and tables instead of plain text | [A2UI](https://adk.dev/integrations/a2ui/) |
-| 🌐 **Frontend** | A shareable web face | FastAPI proxy on [Cloud Run](https://cloud.google.com/run) |
+| Service / Capability | Implementation Details |
+| :--- | :--- |
+| **Foundation Model** | `gemini-2.5-flash` via Google Vertex AI / Agent Development Kit (ADK). |
+| **Agent Platform Memory Bank** | `PreloadMemoryTool` and `generate_memories_callback` (`add_session_to_memory`) persist cross-session facts, allergy sensitivities, and garden constraints. |
+| **Google Cloud Firestore** | Reads and writes plant records, sunlight requirements, watering cycles, and observation logs in the `garden_plants` collection. |
+| **Google Cloud Storage (GCS)** | In-memory upload of generated video assets to a dedicated Cloud Storage bucket with public HTTPS URLs (zero disk writes). |
+| **Google Omni Video Generation** | `gemini-omni-flash-preview` on global Vertex AI endpoint generates 5-second botanical videos in 16:9 or 9:16 aspect ratios. |
+| **Agent Engine Code Sandbox** | `AgentEngineSandboxCodeExecutor` configured to execute Python computations (evapotranspiration, water deficit calculations) in an isolated cloud environment. |
+| **Agent-to-UI (A2UI)** | A2UI v0.8 schemas (`BasicCatalog`) emitting structured UI components (`Card`, `Column`, `Row`, `Text`, `Image`) rendered directly by the frontend. |
+| **Agent-to-Agent (A2A)** | Protocol support enabled in `agents-cli-manifest.yaml` and backend routing for multi-agent interoperability. |
+| **Google Maps Platform** | `geocode_address` (Geocoding API) and `find_nearby_places` (Places API New) to locate local nurseries, garden centers, and suppliers. |
+| **Open-Meteo & Solar APIs** | Live weather forecasts (temperature, precipitation probability, humidity, frost/heat warnings) with staleness tracking, combined with Sunrise-Sunset solar photoperiod tracking. |
 
----
-
-## 📂 Featured Projects
-
-A showcase of what workshop participants built with this lab. Entries are added here from the swag and gallery submission form after each event, so the categories below start empty and fill in over time. Browse them for inspiration, or [submit your own](#-contributing) once you've published your project with the `publish-to-github` skill.
-
-<!--
-Add one entry per project, in this format:
-- 🌿 **[Project Name](https://github.com/their-handle/their-repo)**: one-line description of what it does. <br/> <sub>by [@handle](https://github.com/handle)</sub>
-
-Bump the "Projects" badge count at the top when you add one.
--->
-
-### 🛍️ Commerce & Marketplace Agents
-
-### 🍳 Food & Recipe Agents
-
-- 🥫 **[Smart Pantry Recipe Concierge](https://github.com/matthewrose/buildwithgemini-smart-pantry-recipe-concierge)**: Tracks your pantry and recommends recipes grounded in a real recipe corpus. <br/> <sub>by [@matthewrose](https://github.com/matthewrose)</sub>
-
-### ✈️ Travel & Local Agents
-
-- ⛈️ **[SafeStageWX](https://github.com/felix1028/buildwithgemini-safestagewx)**: An agentic mobile app that helps event planners identify weather threats and climate risks for an event given its date and location, providing tailored preparedness timelines from months out down to hourly day-of forecasts. <br/> <sub>by [@felix1028](https://github.com/felix1028)</sub>
-- 🌇 **[Sidewalk & Sun](https://github.com/OlafHaalstra/buildwithgemini-sidewalk-and-sun)**: Recommends sunny or shaded NYC spots from a curated 500-venue corpus, plotted on an interactive map. <br/> <sub>by [@OlafHaalstra](https://github.com/OlafHaalstra)</sub>
-
-### 💪 Health, Fitness & Wellness Agents
-
-- 🏊 **[TriCoach AI](https://github.com/common-aman/buildwithgemini-tricoach-ai)**: A triathlon coach that logs workouts, computes training zones, and generates motivational visuals. <br/> <sub>by [@common-aman](https://github.com/common-aman)</sub>
-
-### 📚 Learning & Knowledge Agents
-
-- 🎤 **[Interview Coach (PrepPal)](https://github.com/VineethBaradi/buildwithgemini-interview-coach)**: A mock-interview coach that runs LLM-driven practice sessions from a Firestore question bank and gives performance feedback. <br/> <sub>by [@VineethBaradi](https://github.com/VineethBaradi)</sub>
-
-### 🎨 Creative & Media Agents
-
-### 🏢 Productivity & Enterprise Agents
-
-- 🔧 **[GitCraft](https://github.com/fpobletemu/buildwithgemini-gitcraft)**: A developer git assistant that inspects your repo and drafts Conventional-Commits-style messages, grounded in a commit-style guide. <br/> <sub>by [@fpobletemu](https://github.com/fpobletemu)</sub>
-- 🖥️ **[IT Helpdesk Agent](https://github.com/NaweedAhmadi/buildwithgemini-it-helpdesk-agent)**: An IT support assistant that answers from a knowledge base and remembers context across sessions, with a ticket dashboard UI. <br/> <sub>by [@NaweedAhmadi](https://github.com/NaweedAhmadi)</sub>
-
-### 🧪 Experimental & Other
-
-- 🃏 **[Poker Agent](https://github.com/jakecho1108/buildwithgemini-poker-agent)**: A poker trainer with a real 800-iteration Monte Carlo equity engine and strategy tips grounded in a poker playbook. <br/> <sub>by [@jakecho1108](https://github.com/jakecho1108)</sub>
+> [!NOTE]
+> **Implementation Status of Brief Items:**
+> - **Video Generation:** Fully implemented with Google Omni (`gemini-omni-flash-preview`).
+> - **Static Image Generation:** *Planned, not yet implemented.* (Image generation mentioned in the initial concept brief was superseded by the Omni video generation tool).
 
 ---
 
-## 🧠 What's in this Repo
+## 🛠️ Implemented Tools
 
-The `.agents/` folder teaches Antigravity how to build agents on Google Cloud.
+All tools are implemented in `app/gardening_tools.py` and registered with the agent in `app/agent.py`:
 
-### Skills
+### 1. Garden Layout & Profiles
+- `get_garden_summary`: Retrieves the garden layout, growing areas, registered plants, and recent observations.
+- `add_or_update_growing_area`: Creates or updates growing zones (patio, balcony, raised bed, open ground, greenhouse).
+- `add_or_update_plant`: Adds or updates plant profiles with container dimensions, substrate, and drainage attributes.
 
-A **skill** is a bundle of instructions that loads automatically when it's relevant, so the agent gets the workflow right in fewer steps instead of rediscovering it each time.
+### 2. Environmental Monitoring & Weather
+- `check_local_weather`: Fetches live weather, precipitation likelihood, temperature, and frost/heatwave risk flags from Open-Meteo.
+- `get_daylight_and_photoperiod`: Computes sunrise/sunset, total daylight hours, and photoperiod classifications (short-day vs. long-day).
 
-| Skill | What it does |
-| --- | --- |
-| [`pick-your-agent-project`](.agents/skills/pick-your-agent-project/SKILL.md) | Brainstorm your app idea and write a project brief |
-| [`troubleshoot-lab-setup`](.agents/skills/troubleshoot-lab-setup/SKILL.md) | Verify your environment and fix common setup errors |
-| [`memory-bank-setup`](.agents/skills/setup-memory-bank/SKILL.md) | Add cross-session memory to your agent with Vertex AI Memory Bank |
-| [`enable-a2ui`](.agents/skills/enable-a2ui/SKILL.md) | Make your agent reply with rich UI cards (A2UI) in the ADK dev UI |
-| [`build-agent-frontend`](.agents/skills/build-agent-frontend/SKILL.md) | Generate a FastAPI chat frontend and ship it to Cloud Run |
-| [`record-demo`](.agents/skills/record-demo/SKILL.md) | Record a branded demo video of your agent, with an optional AI soundtrack |
-| [`publish-to-github`](.agents/skills/publish-to-github/SKILL.md) | Publish your finished project to your own GitHub and submit it for swag |
+### 3. Care & Planning
+- `generate_conditional_care_plan`: Produces rule-based, evidence-backed daily care priorities synthesizing weather and plant microclimates.
+- `plan_travel_absence`: Prepares a 3-stage travel departure and maintenance strategy based on trip duration and container risk tiers.
+- `record_plant_observation`: Records physical observations ("soil damp", "powdery mildew", "new shoot growth").
+- `record_plant_watering`: Records watering timestamps and notes.
+- `search_gardening_knowledge`: Queries botanical care guides, companion planting recommendations, and pest management.
 
-### Pre-configured tools (MCP)
+### 4. Cloud Firestore Integration
+- `list_garden_plants_firestore`: Queries stored plants from Cloud Firestore `garden_plants`.
+- `get_garden_plant_firestore`: Fetches a single plant document by ID.
+- `add_or_update_firestore_plant`: Writes or updates plant records in Firestore.
+- `log_firestore_plant_observation`: Appends observations to a Firestore plant timeline.
 
-[`.agents/mcp_config.json`](.agents/mcp_config.json) wires up two [Model Context Protocol](https://modelcontextprotocol.io/) servers that authenticate with your gcloud credentials, so the agent can look things up instead of guessing:
+### 5. Media & Location Tools
+- `generate_plant_video`: Generates short botanical videos via Google Omni (`gemini-omni-flash-preview`), saves them as session artifacts, and uploads bytes to Cloud Storage.
+- `geocode_address`: Resolves garden or user addresses into latitude/longitude coordinates.
+- `find_nearby_places`: Searches for nearby nurseries, garden centers, or plant supply stores.
 
-- **Firebase**: work directly with Firestore and other Firebase services
-- **Google Developer Knowledge**: grounded access to Google's official docs (Cloud, Firebase, ADK, Agent Platform)
+---
 
-### Layout
+## 🖥️ Web Frontend Views
 
-```text
-.agents/
-├── mcp_config.json    # Firebase + Developer Knowledge MCP servers
-├── rules/             # workspace rules (only deploy when asked)
-└── skills/            # the workshop skills listed above
+FloraGuide includes a responsive web dashboard served by FastAPI:
+
+1. **Today View:** Glanceable metrics (total plants, pending tasks, weather status), daily action checklist, and quick care triggers.
+2. **My Garden (Visual Planner):**
+   - **2D Canvas Planner:** Interactive drawing tool for growing zones, plant containers, and paths.
+   - **3D Garden View:** Real-time Three.js visualization with realistic plant meshes, procedural textures, and day/night lighting.
+   - **Load Example Garden:** 1-click action pre-populating an authentic multi-zone garden (Sunny Patio, Raised Vegetable Beds, Herb Corner, Shaded Flower Bed) with editable profiles and journal entries.
+3. **Journal View:** Chronological feed of timestamped plant observations, health notes, and care milestones.
+4. **Plans View:** Dedicated vacation and absence preparation calculator.
+5. **Assistant View:** Native A2UI chat interface supporting quick prompts, real-time typing indicators, and rich card rendering.
+
+---
+
+## 🚀 Local Setup & Running Instructions
+
+### Prerequisites
+- Python 3.10+
+- [uv](https://docs.astral.sh/uv/) (Python package manager)
+- Google Cloud SDK (`gcloud`) authenticated with a project having Vertex AI and Firestore APIs enabled
+- Node.js & npm (optional, only needed if re-recording demo videos with Playwright)
+
+### 1. Configure Environment
+
+From the `my-agent` directory:
+```bash
+cp .env.example .env
+```
+
+Ensure your `.env` contains:
+```ini
+GOOGLE_CLOUD_PROJECT=your-project-id
+GOOGLE_CLOUD_REGION=us-central1
+```
+
+Authenticate your local environment with Google Cloud Application Default Credentials:
+```bash
+gcloud auth login
+gcloud auth application-default login
+gcloud config set project your-project-id
+```
+
+### 2. Install Dependencies
+
+Using `uv`:
+```bash
+uv sync
+```
+
+Or using standard `pip`:
+```bash
+pip install -e .
+```
+
+### 3. Seed Initial Cloud Firestore Data (Optional)
+
+To seed your Cloud Firestore collection with starter garden plants:
+```bash
+python seed_firestore.py
+```
+
+### 4. Run the Agent Application Locally
+
+Start the local web application (serves both the FastAPI backend proxy and the dashboard UI):
+```bash
+python frontend/main.py
+```
+
+The application will start on the configured port (default: 8080). Open your browser and navigate to the address shown in your terminal.
+
+### 5. Running the ADK Dev Playground
+
+To test the raw ADK agent and view session artifacts directly in the ADK playground:
+```bash
+agents-cli playground
 ```
 
 ---
 
-## 🧰 Build Your Own
+## 🧪 Running Tests
 
-The full, step-by-step walkthrough lives on the **[lab guide](https://cszhu.github.io/build-with-gemini/)**. This is the short version.
-
-**Prerequisites** (the lab workstation comes with all of this pre-installed; you'll need it if you're running on your own machine):
-
-- A **Google Cloud project** with billing enabled
-- **[Antigravity](https://antigravity.google)** (`agy`), the coding agent that loads the skills above
-- **[agents-cli](https://google.github.io/agents-cli/guide/getting-started/)**, built on the [Agent Development Kit (ADK)](https://google.github.io/adk-docs/)
-- Authenticated gcloud: `gcloud auth login` and `gcloud auth application-default login`
-- A personal **GitHub account** for the final publish-and-submit step
-
-**Quickstart:**
+FloraGuide includes unit and integration test suites:
 
 ```bash
-git clone https://github.com/cszhu/build-with-gemini
-cd build-with-gemini
-agy
+# Run all tests
+uv run pytest
+
+# Run integration tests specifically
+uv run pytest tests/integration/test_server_e2e.py
 ```
-
-On startup, Antigravity scans the `.agents/` folder and loads the skills and tools above automatically. In the AGY prompt:
-
-```text
-/skills            # see the installed skills
-/mcp               # confirm the firebase + google-developer-knowledge tools are connected
-```
-
-```text
-Verify my setup.   # runs the troubleshoot-lab-setup skill to check your environment
-```
-
-Then follow the [lab guide](https://cszhu.github.io/build-with-gemini/) to design, build, deploy, and share your agent, start to finish.
-
----
-
-## 📚 Resources
-
-- **[Lab guide](https://cszhu.github.io/build-with-gemini/)**: the step-by-step workshop
-- [Antigravity](https://antigravity.google)
-- [agents-cli](https://google.github.io/agents-cli/guide/getting-started/)
-- [Agent Development Kit (ADK)](https://google.github.io/adk-docs/)
-- [Gemini Enterprise Agent Platform](https://docs.cloud.google.com/gemini-enterprise-agent-platform)
-
----
-
-## 🤝 Contributing
-
-**Built something?** Publish it with the `publish-to-github` skill and submit it through the form it gives you. Submissions get you swag, and standout projects get added to the [Featured Projects](#-featured-projects) gallery above.
-
-**Found a bug?** If you hit a rough edge in a skill or the lab, please [open an issue](https://github.com/cszhu/build-with-gemini/issues).
 
 ---
 
 ## 📄 License
 
-This is not an officially supported Google product and is provided for the Build with Gemini workshop for demonstration purposes only.
+Apache 2.0

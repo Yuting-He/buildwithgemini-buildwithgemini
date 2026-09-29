@@ -29,6 +29,12 @@ from app.app_utils.reasoning_engine_adapter import (
 )
 
 load_dotenv()
+# Prevent google-genai from misidentifying Google Maps API key as Gemini API key on Vertex AI
+if "GOOGLE_API_KEY" in os.environ and os.environ.get("GOOGLE_GENAI_USE_VERTEXAI") == "true":
+    if not os.environ.get("GOOGLE_MAPS_API_KEY"):
+        os.environ["GOOGLE_MAPS_API_KEY"] = os.environ["GOOGLE_API_KEY"]
+    os.environ.pop("GOOGLE_API_KEY", None)
+
 otel_to_cloud = os.environ.get(
     "GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY", ""
 ).lower() in ("true", "1")
@@ -64,6 +70,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         task_store=InMemoryTaskStore(),
         rpc_path=f"/a2a/{adk_app.name}",
     )
+    if adk_app.name != "app":
+        await attach_a2a_routes(
+            app,
+            agent=root_agent,
+            runner=runner,
+            task_store=InMemoryTaskStore(),
+            rpc_path="/a2a/app",
+        )
     yield
 
 
