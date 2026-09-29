@@ -44,6 +44,8 @@ class AreaRequest(BaseModel):
     shelter_from_rain: bool = False
     watering_arrangements: str = ""
     area_id: str | None = None
+    notes: str = ""
+    surface_material: str = ""
 
 class PlantRequest(BaseModel):
     area_id: str
@@ -62,7 +64,7 @@ class QuickCareRequest(BaseModel):
     category: str = "general"
 
 class MoveAreaRequest(BaseModel):
-    area_id: str
+    area_id: str | None = ""
 
 class LayoutRequest(BaseModel):
     layout: dict
@@ -163,12 +165,13 @@ async def api_add_area(req: AreaRequest):
         sun_exposure=req.sun_exposure,
         shelter_from_rain=req.shelter_from_rain,
         watering_arrangements=req.watering_arrangements,
-        area_id=req.area_id
+        area_id=req.area_id,
+        notes=req.notes
     )
 
 @app.delete("/api/areas/{area_id}")
-async def api_delete_area(area_id: str):
-    store.delete_growing_area(area_id)
+async def api_delete_area(area_id: str, retain_plants: bool = True):
+    store.delete_growing_area(area_id, retain_plants=retain_plants)
     return {"status": "success", "deleted_area_id": area_id}
 
 @app.post("/api/plants")
@@ -189,7 +192,7 @@ async def api_add_plant(req: PlantRequest):
 
 @app.post("/api/plants/{plant_id}/area")
 async def api_move_plant(plant_id: str, req: MoveAreaRequest):
-    res = store.update_plant_area(plant_id, req.area_id)
+    res = store.update_plant_area(plant_id, req.area_id or "")
     if res:
         res["condition"] = store.evaluate_plant_condition(plant_id)
         return {"status": "success", "plant": res}

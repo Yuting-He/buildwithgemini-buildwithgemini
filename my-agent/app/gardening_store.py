@@ -270,13 +270,13 @@ def get_plant(plant_id: str) -> Optional[Dict[str, Any]]:
     row = conn.execute("""
     SELECT p.*, a.name as area_name, a.shelter_from_rain, a.sun_exposure, a.garden_id
     FROM plants p
-    JOIN growing_areas a ON p.area_id = a.id
+    LEFT JOIN growing_areas a ON p.area_id = a.id
     WHERE p.id = ?
     """, (plant_id,)).fetchone()
     conn.close()
     if row:
         d = dict(row)
-        d["shelter_from_rain"] = bool(d["shelter_from_rain"])
+        d["shelter_from_rain"] = bool(d["shelter_from_rain"]) if d["shelter_from_rain"] is not None else False
         try:
             d["inferred_attributes"] = json.loads(d["inferred_attributes"] or "{}")
         except Exception:
@@ -290,14 +290,14 @@ def list_plants(area_id: Optional[str] = None) -> List[Dict[str, Any]]:
         rows = conn.execute("""
         SELECT p.*, a.name as area_name, a.shelter_from_rain, a.sun_exposure, a.garden_id
         FROM plants p
-        JOIN growing_areas a ON p.area_id = a.id
+        LEFT JOIN growing_areas a ON p.area_id = a.id
         WHERE p.area_id = ?
         """, (area_id,)).fetchall()
     else:
         rows = conn.execute("""
         SELECT p.*, a.name as area_name, a.shelter_from_rain, a.sun_exposure, a.garden_id
         FROM plants p
-        JOIN growing_areas a ON p.area_id = a.id
+        LEFT JOIN growing_areas a ON p.area_id = a.id
         """).fetchall()
     conn.close()
     result = []
@@ -471,12 +471,16 @@ def delete_plant(plant_id: str) -> bool:
     conn.close()
     return True
 
-def delete_growing_area(area_id: str) -> bool:
+def delete_growing_area(area_id: str, retain_plants: bool = True) -> bool:
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("DELETE FROM tasks WHERE area_id = ?", (area_id,))
-    cursor.execute("DELETE FROM journal_entries WHERE area_id = ?", (area_id,))
-    cursor.execute("DELETE FROM plants WHERE area_id = ?", (area_id,))
+    if retain_plants:
+        cursor.execute("UPDATE plants SET area_id = '' WHERE area_id = ?", (area_id,))
+        cursor.execute("UPDATE tasks SET area_id = '' WHERE area_id = ?", (area_id,))
+    else:
+        cursor.execute("DELETE FROM tasks WHERE area_id = ?", (area_id,))
+        cursor.execute("DELETE FROM journal_entries WHERE area_id = ?", (area_id,))
+        cursor.execute("DELETE FROM plants WHERE area_id = ?", (area_id,))
     cursor.execute("DELETE FROM growing_areas WHERE id = ?", (area_id,))
     conn.commit()
     conn.close()

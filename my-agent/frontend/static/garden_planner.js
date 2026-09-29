@@ -318,6 +318,7 @@
       this.resizeOrigPoints = null;
       this.pendingAreaPoints = null;
       this.pendingShapeType = null;
+      this.pendingAreaMeta = null;
       this.hoveredAreaId = null;
       this.ghostPlant = null; // for drag from library
 
@@ -578,7 +579,10 @@
     }
 
     pushUndo() {
-      this.undoStack.push(JSON.parse(JSON.stringify(this.layout)));
+      this.undoStack.push({
+        layout: JSON.parse(JSON.stringify(this.layout)),
+        growingAreas: JSON.parse(JSON.stringify(this.growingAreas))
+      });
       if (this.undoStack.length > 25) this.undoStack.shift();
       this.redoStack = [];
       this.updateUndoRedoButtons();
@@ -586,8 +590,17 @@
 
     undo() {
       if (this.undoStack.length === 0) return;
-      this.redoStack.push(JSON.parse(JSON.stringify(this.layout)));
-      this.layout = this.undoStack.pop();
+      this.redoStack.push({
+        layout: JSON.parse(JSON.stringify(this.layout)),
+        growingAreas: JSON.parse(JSON.stringify(this.growingAreas))
+      });
+      const state = this.undoStack.pop();
+      if (state.layout) {
+        this.layout = state.layout;
+        if (state.growingAreas) this.growingAreas = state.growingAreas;
+      } else {
+        this.layout = state;
+      }
       this.scheduleSave();
       this.renderAll();
       this.updateUndoRedoButtons();
@@ -595,8 +608,17 @@
 
     redo() {
       if (this.redoStack.length === 0) return;
-      this.undoStack.push(JSON.parse(JSON.stringify(this.layout)));
-      this.layout = this.redoStack.pop();
+      this.undoStack.push({
+        layout: JSON.parse(JSON.stringify(this.layout)),
+        growingAreas: JSON.parse(JSON.stringify(this.growingAreas))
+      });
+      const state = this.redoStack.pop();
+      if (state.layout) {
+        this.layout = state.layout;
+        if (state.growingAreas) this.growingAreas = state.growingAreas;
+      } else {
+        this.layout = state;
+      }
       this.scheduleSave();
       this.renderAll();
       this.updateUndoRedoButtons();
@@ -819,6 +841,10 @@
       }
     }
 
+    populateAreaFilter() {
+      this.renderLegendAndFilters();
+    }
+
     setConditionFilter(code) {
       this.filterCondition = code;
       this.renderLegendAndFilters();
@@ -936,9 +962,22 @@
         if (clickedPlant) {
           this.selectPlant(clickedPlant.id);
         } else {
-          const clickedArea = this.hitTestArea(mouse);
-          if (clickedArea) {
-            this.selectArea(clickedArea.id);
+          const matchingAreas = [];
+          for (let i = this.layout.areas.length - 1; i >= 0; i--) {
+            const a = this.layout.areas[i];
+            if (Geometry.pointInPolygon(mouse, a.points)) {
+              matchingAreas.push(a);
+            }
+          }
+          if (matchingAreas.length > 0) {
+            let pickedArea = matchingAreas[0];
+            if (matchingAreas.length > 1 && this.selectedAreaId) {
+              const currIdx = matchingAreas.findIndex(a => a.id === this.selectedAreaId);
+              if (currIdx !== -1) {
+                pickedArea = matchingAreas[(currIdx + 1) % matchingAreas.length];
+              }
+            }
+            this.selectArea(pickedArea.id);
           } else {
             this.clearSelection();
           }
@@ -969,8 +1008,7 @@
             this.polygonPoints.push(mouse);
           }
         }
-        const countSpan = document.getElementById('poly-point-count');
-        if (countSpan) countSpan.textContent = this.polygonPoints.length.toString();
+        this.updateDrawingBanner();
         this.renderCanvas2D();
       } else if (this.activeTool === 'select') {
         // 1. Check Corner Resize Handles of Selected Area
@@ -996,13 +1034,36 @@
               }
             }
 
-            // 2. Check Boundary Vertex Handles
+            // 2. Check Boundary Vertex Handles (Alt-click deletes vertex)
             for (let i = 0; i < area.points.length; i++) {
               if (Geometry.distance(mouse, area.points[i]) < 12 / this.zoom) {
+                if (e.altKey && area.points.length > 3) {
+                  this.pushUndo();
+                  area.points.splice(i, 1);
+                  this.renderCanvas2D();
+                  this.scheduleSave();
+                  return;
+                }
                 this.pushUndo();
                 this.isDraggingObject = true;
                 this.dragTargetType = 'vertex';
                 this.dragVertexIndex = i;
+                return;
+              }
+            }
+
+            // 2b. Check Boundary Edge Midpoints to Insert Vertex
+            for (let i = 0; i < area.points.length; i++) {
+              const p1 = area.points[i];
+              const p2 = area.points[(i + 1) % area.points.length];
+              const mid = { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 };
+              if (Geometry.distance(mouse, mid) < 10 / this.zoom) {
+                this.pushUndo();
+                area.points.splice(i + 1, 0, { x: mouse.x, y: mouse.y });
+                this.isDraggingObject = true;
+                this.dragTargetType = 'vertex';
+                this.dragVertexIndex = i + 1;
+                this.renderCanvas2D();
                 return;
               }
             }
@@ -1021,11 +1082,24 @@
           return;
         }
 
-        // 4. Check Area Body Click
-        const hitArea = this.hitTestArea(mouse);
-        if (hitArea) {
+        // 4. Check Area Body Click (cycles overlapping areas)
+        const matchingAreas = [];
+        for (let i = this.layout.areas.length - 1; i >= 0; i--) {
+          const a = this.layout.areas[i];
+          if (Geometry.pointInPolygon(mouse, a.points)) {
+            matchingAreas.push(a);
+          }
+        }
+        if (matchingAreas.length > 0) {
+          let pickedArea = matchingAreas[0];
+          if (matchingAreas.length > 1 && this.selectedAreaId) {
+            const currIdx = matchingAreas.findIndex(a => a.id === this.selectedAreaId);
+            if (currIdx !== -1) {
+              pickedArea = matchingAreas[(currIdx + 1) % matchingAreas.length];
+            }
+          }
           this.pushUndo();
-          this.selectArea(hitArea.id);
+          this.selectArea(pickedArea.id);
           this.isDraggingObject = true;
           this.dragTargetType = 'area';
           this.dragStartWorld = { x: mouse.x, y: mouse.y };
@@ -1412,29 +1486,198 @@
       }
     }
 
-    // --- Shape Creation & Smoothing ---
+    // --- Area Creation Dialog & Drawing Workflow ---
+    openAddAreaDialog() {
+      if (this.activeMode === 'explore') {
+        this.setMode('edit');
+      }
+      const modal = document.getElementById('modal-area-create');
+      if (modal) {
+        const nextNum = this.growingAreas.length + 1;
+        const nameInput = document.getElementById('area-form-name');
+        if (nameInput) nameInput.value = `Growing Area ${nextNum}`;
+        const typeSelect = document.getElementById('area-form-type');
+        if (typeSelect) typeSelect.value = 'raised bed';
+        const surfSelect = document.getElementById('area-form-surface');
+        if (surfSelect) surfSelect.value = 'wood';
+        const sunSelect = document.getElementById('area-form-sun');
+        if (sunSelect) sunSelect.value = 'full sun';
+        const shelterSelect = document.getElementById('area-form-shelter');
+        if (shelterSelect) shelterSelect.value = '0';
+        const wateringInput = document.getElementById('area-form-watering');
+        if (wateringInput) wateringInput.value = '';
+        const notesInput = document.getElementById('area-form-notes');
+        if (notesInput) notesInput.value = '';
+
+        this.selectDrawingMethod('freehand');
+        modal.style.display = 'flex';
+      }
+    }
+
+    selectDrawingMethod(method) {
+      document.querySelectorAll('.drawing-method-card').forEach(card => {
+        if (card.getAttribute('data-method') === method) {
+          card.classList.add('active');
+        } else {
+          card.classList.remove('active');
+        }
+      });
+      const hidden = document.getElementById('area-form-method');
+      if (hidden) hidden.value = method;
+    }
+
+    handleAreaTypeChange(type) {
+      const surf = document.getElementById('area-form-surface');
+      if (!surf) return;
+      if (type.includes('raised')) surf.value = 'wood';
+      else if (type.includes('patio')) surf.value = 'stone';
+      else if (type.includes('lawn')) surf.value = 'turf';
+      else if (type.includes('balcony')) surf.value = 'wood';
+      else if (type.includes('greenhouse')) surf.value = 'glass';
+      else if (type.includes('path')) surf.value = 'gravel';
+      else surf.value = 'soil';
+    }
+
+    confirmAddAreaModal() {
+      const name = (document.getElementById('area-form-name')?.value || '').trim() || `Growing Area ${this.growingAreas.length + 1}`;
+      const areaType = document.getElementById('area-form-type')?.value || 'garden bed';
+      const surface = document.getElementById('area-form-surface')?.value || 'soil';
+      const sun = document.getElementById('area-form-sun')?.value || 'full sun';
+      const shelter = document.getElementById('area-form-shelter')?.value === '1';
+      const watering = (document.getElementById('area-form-watering')?.value || '').trim();
+      const notes = (document.getElementById('area-form-notes')?.value || '').trim();
+      const method = document.getElementById('area-form-method')?.value || 'freehand';
+
+      this.pendingAreaMeta = {
+        name,
+        area_type: areaType,
+        surface_material: surface,
+        sun_exposure: sun,
+        shelter_from_rain: shelter,
+        watering_arrangements: watering,
+        notes,
+        drawing_method: method
+      };
+
+      this.closeAreaModal();
+      this.setMode('edit');
+      this.setTool(method);
+      this.updateDrawingBanner();
+    }
+
+    closeAreaModal() {
+      const modal = document.getElementById('modal-area-create');
+      if (modal) modal.style.display = 'none';
+    }
+
+    cancelDrawing() {
+      this.pendingAreaMeta = null;
+      this.freehandPoints = [];
+      this.rectStart = null;
+      this.rectCurrent = null;
+      this.polygonPoints = [];
+      this.isDrawing = false;
+      this.hideDrawingBanner();
+      this.setTool('select');
+      this.renderCanvas2D();
+    }
+
+    updateDrawingBanner() {
+      const banner = document.getElementById('canvas-drawing-banner');
+      if (!banner) return;
+
+      if (this.activeMode === 'explore' || this.activeTool === 'select') {
+        banner.style.display = 'none';
+        return;
+      }
+
+      banner.style.display = 'flex';
+      const textEl = document.getElementById('drawing-banner-text');
+      const iconEl = document.getElementById('drawing-banner-icon');
+      const finishBtn = document.getElementById('btn-banner-finish');
+      const undoPtBtn = document.getElementById('btn-banner-undo-pt');
+      const countSpan = document.getElementById('poly-point-count');
+
+      if (this.activeTool === 'freehand') {
+        if (textEl) textEl.textContent = 'Freehand: Drag pointer on canvas to outline the area. Release to close shape.';
+        if (iconEl) iconEl.textContent = 'gesture';
+        if (finishBtn) finishBtn.style.display = 'none';
+        if (undoPtBtn) undoPtBtn.style.display = 'none';
+      } else if (this.activeTool === 'rect') {
+        if (textEl) textEl.textContent = 'Rectangle: Click and drag across opposite corners to draw area.';
+        if (iconEl) iconEl.textContent = 'crop_square';
+        if (finishBtn) finishBtn.style.display = 'none';
+        if (undoPtBtn) undoPtBtn.style.display = 'none';
+      } else if (this.activeTool === 'polygon') {
+        const count = this.polygonPoints ? this.polygonPoints.length : 0;
+        if (countSpan) countSpan.textContent = count.toString();
+        if (textEl) {
+          textEl.innerHTML = `Polygon: Click canvas to place vertices (<strong>${count}</strong> pts). Click start vertex or Finish Shape to close.`;
+        }
+        if (iconEl) iconEl.textContent = 'polyline';
+        if (finishBtn) {
+          finishBtn.style.display = 'inline-flex';
+          finishBtn.disabled = count < 3;
+          finishBtn.style.opacity = count < 3 ? '0.5' : '1';
+        }
+        if (undoPtBtn) {
+          undoPtBtn.style.display = count > 0 ? 'inline-flex' : 'none';
+        }
+      }
+    }
+
+    hideDrawingBanner() {
+      const banner = document.getElementById('canvas-drawing-banner');
+      if (banner) banner.style.display = 'none';
+    }
+
+    // --- Shape Creation, Smoothing & Persistence ---
     finishFreehandArea() {
-      if (this.freehandPoints.length < 5) return;
+      if (this.freehandPoints.length < 5) {
+        this.showToast("Outline too short. Please drag a larger area.");
+        this.freehandPoints = [];
+        this.renderCanvas2D();
+        return;
+      }
+
+      // Close shape
       const first = this.freehandPoints[0];
       const last = this.freehandPoints[this.freehandPoints.length - 1];
       if (Geometry.distance(first, last) > 4) {
         this.freehandPoints.push({ x: first.x, y: first.y });
       }
 
-      const reduced = Geometry.douglasPeucker(this.freehandPoints, 6 / this.zoom);
-      this.freehandPoints = [];
-      if (reduced.length < 3) return;
+      // Bounds validation
+      const bounds = Geometry.polygonBounds(this.freehandPoints);
+      if (bounds.width < 25 / this.zoom || bounds.height < 25 / this.zoom) {
+        this.showToast("Shape too small. Please draw a larger area.");
+        this.freehandPoints = [];
+        this.renderCanvas2D();
+        return;
+      }
+
+      // Douglas-Peucker point reduction + Chaikin smoothing
+      let reduced = Geometry.douglasPeucker(this.freehandPoints, 4.5 / this.zoom);
+      if (reduced.length < 3) reduced = this.freehandPoints.slice();
       const smoothed = Geometry.chaikinSmooth(reduced, 2);
-      this.openAreaModalWithPoints(smoothed, 'freehand');
+
+      this.commitNewDrawnArea(smoothed, 'freehand');
     }
 
     finishRectArea() {
+      if (!this.rectStart || !this.rectCurrent) return;
       const x1 = Math.min(this.rectStart.x, this.rectCurrent.x);
       const y1 = Math.min(this.rectStart.y, this.rectCurrent.y);
       const x2 = Math.max(this.rectStart.x, this.rectCurrent.x);
       const y2 = Math.max(this.rectStart.y, this.rectCurrent.y);
 
-      if (x2 - x1 < 20 || y2 - y1 < 20) return;
+      if (x2 - x1 < 20 / this.zoom || y2 - y1 < 20 / this.zoom) {
+        this.showToast("Rectangle too small. Drag a larger area.");
+        this.rectStart = null;
+        this.rectCurrent = null;
+        this.renderCanvas2D();
+        return;
+      }
 
       const points = [
         { x: x1, y: y1 },
@@ -1443,7 +1686,7 @@
         { x: x1, y: y2 }
       ];
 
-      this.openAreaModalWithPoints(points, 'rectangle');
+      this.commitNewDrawnArea(points, 'rectangle');
     }
 
     finishPolygonArea() {
@@ -1452,94 +1695,118 @@
         return;
       }
       const points = this.polygonPoints.slice();
-      this.polygonPoints = [];
-      const polyControls = document.getElementById('polygon-drawing-controls');
-      if (polyControls) polyControls.style.display = 'none';
-      this.openAreaModalWithPoints(points, 'polygon');
+      this.commitNewDrawnArea(points, 'polygon');
+    }
+
+    undoPolygonPoint() {
+      if (this.polygonPoints.length > 0) {
+        this.polygonPoints.pop();
+        this.updateDrawingBanner();
+        this.renderCanvas2D();
+      }
     }
 
     cancelPolygon() {
+      this.cancelDrawing();
+    }
+
+    async commitNewDrawnArea(points, shapeType) {
+      if (!points || points.length < 3) return;
+
+      const meta = this.pendingAreaMeta || {
+        name: `Growing Area ${this.growingAreas.length + 1}`,
+        area_type: shapeType === 'freehand' ? 'garden bed' : (shapeType === 'rectangle' ? 'raised bed' : 'lawn'),
+        surface_material: shapeType === 'freehand' ? 'soil' : (shapeType === 'rectangle' ? 'wood' : 'turf'),
+        sun_exposure: 'full sun',
+        shelter_from_rain: false,
+        watering_arrangements: '',
+        notes: ''
+      };
+
+      this.pendingAreaMeta = null;
+      this.isDrawing = false;
+      this.freehandPoints = [];
+      this.rectStart = null;
+      this.rectCurrent = null;
       this.polygonPoints = [];
-      const polyControls = document.getElementById('polygon-drawing-controls');
-      if (polyControls) polyControls.style.display = 'none';
+      this.hideDrawingBanner();
       this.setTool('select');
-      this.renderCanvas2D();
-    }
-
-    openAreaModalWithPoints(points, shapeType) {
-      this.pendingAreaPoints = points;
-      this.pendingShapeType = shapeType;
-
-      const modal = document.getElementById('modal-area-create');
-      if (modal) {
-        const nextNum = this.layout.areas.length + 1;
-        document.getElementById('area-form-name').value = `Growing Area ${nextNum}`;
-        document.getElementById('area-form-type').value = shapeType === 'freehand' ? 'in-ground' : 'raised bed';
-        document.getElementById('area-form-sun').value = 'full sun';
-        document.getElementById('area-form-shelter').value = '0';
-        document.getElementById('area-form-watering').value = 'Manual watering';
-        modal.style.display = 'flex';
-      }
-      this.renderCanvas2D();
-    }
-
-    async submitNewArea() {
-      const name = document.getElementById('area-form-name').value.trim() || 'New Area';
-      const areaType = document.getElementById('area-form-type').value;
-      const sun = document.getElementById('area-form-sun').value;
-      const shelter = document.getElementById('area-form-shelter').value === '1';
-      const watering = document.getElementById('area-form-watering').value.trim();
 
       try {
         const res = await fetch('/api/areas', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            name: name,
-            area_type: areaType,
-            sun_exposure: sun,
-            shelter_from_rain: shelter,
-            watering_arrangements: watering
+            name: meta.name,
+            area_type: meta.area_type,
+            surface_material: meta.surface_material || '',
+            sun_exposure: meta.sun_exposure,
+            shelter_from_rain: meta.shelter_from_rain,
+            watering_arrangements: meta.watering_arrangements,
+            notes: meta.notes
           })
         });
 
         const data = await res.json();
         const newArea = data.growing_area;
-
         if (newArea) {
+          newArea.surface_material = meta.surface_material || '';
+          newArea.notes = meta.notes || '';
           this.growingAreas.push(newArea);
           this.pushUndo();
 
-          this.layout.areas.push({
+          const newLayoutArea = {
             id: newArea.id,
             name: newArea.name,
             area_type: newArea.area_type,
-            shape_type: this.pendingShapeType || 'polygon',
-            points: this.pendingAreaPoints,
+            surface_material: newArea.surface_material,
+            shape_type: shapeType,
+            points: points.map(p => ({ x: Math.round(p.x * 10) / 10, y: Math.round(p.y * 10) / 10 })),
             rotation: 0
-          });
+          };
+          this.layout.areas.push(newLayoutArea);
 
-          this.pendingAreaPoints = null;
-          this.pendingShapeType = null;
-          this.closeAreaModal();
           this.selectArea(newArea.id);
-          this.setTool('select');
           this.scheduleSave();
           this.renderAll();
-          this.showToast(`Created growing area "${name}".`);
+          this.populateAreaFilter();
+          this.showToast(`Created growing area "${newArea.name}".`);
         }
       } catch (err) {
-        console.error("Failed to add area:", err);
+        console.error("Failed to persist area via API, saving locally:", err);
+        const fallbackId = 'area-' + Math.random().toString(36).substr(2, 7);
+        const fallbackArea = {
+          id: fallbackId,
+          name: meta.name,
+          area_type: meta.area_type,
+          surface_material: meta.surface_material,
+          sun_exposure: meta.sun_exposure,
+          shelter_from_rain: meta.shelter_from_rain,
+          watering_arrangements: meta.watering_arrangements,
+          notes: meta.notes
+        };
+        this.growingAreas.push(fallbackArea);
+        this.layout.areas.push({
+          id: fallbackId,
+          name: fallbackArea.name,
+          area_type: fallbackArea.area_type,
+          surface_material: fallbackArea.surface_material,
+          shape_type: shapeType,
+          points: points,
+          rotation: 0
+        });
+        this.selectArea(fallbackId);
+        this.scheduleSave();
+        this.renderAll();
+        this.showToast(`Saved area "${meta.name}".`);
       }
     }
 
-    closeAreaModal() {
-      const modal = document.getElementById('modal-area-create');
-      if (modal) modal.style.display = 'none';
-      this.pendingAreaPoints = null;
-      this.pendingShapeType = null;
-      this.setTool('select');
-      this.renderCanvas2D();
+    updateDeleteButtonState() {
+      const delBtn = document.getElementById('btn-tool-delete');
+      if (delBtn) {
+        delBtn.disabled = !this.selectedPlantId && !this.selectedAreaId;
+      }
     }
 
     // --- Hit Testing ---
@@ -1576,18 +1843,21 @@
     selectPlant(plantId) {
       this.selectedPlantId = plantId;
       this.selectedAreaId = null;
+      this.updateDeleteButtonState();
       this.renderAll();
     }
 
     selectArea(areaId) {
       this.selectedAreaId = areaId;
       this.selectedPlantId = null;
+      this.updateDeleteButtonState();
       this.renderAll();
     }
 
     clearSelection() {
       this.selectedPlantId = null;
       this.selectedAreaId = null;
+      this.updateDeleteButtonState();
       this.renderAll();
     }
 
@@ -1803,15 +2073,16 @@
       ctx.closePath();
 
       const type = (area.area_type || 'balcony').toLowerCase();
+      const surface = (area.surface_material || '').toLowerCase();
       let fillColor = '#ffffff';
       let strokeColor = '#8d6e63';
       let strokeWidth = 3;
 
-      if (type.includes('balcony')) {
+      if (surface.includes('wood') || type.includes('balcony')) {
         fillColor = '#f5efe6';
         strokeColor = '#a1887f';
         strokeWidth = 3;
-      } else if (type.includes('patio')) {
+      } else if (surface.includes('stone') || type.includes('patio')) {
         fillColor = '#eaecef';
         strokeColor = '#94a3b8';
         strokeWidth = 3;
@@ -1819,15 +2090,15 @@
         fillColor = '#3e2723';
         strokeColor = '#8d5b4c';
         strokeWidth = 6;
-      } else if (type.includes('lawn')) {
+      } else if (surface.includes('turf') || type.includes('lawn')) {
         fillColor = '#dcfce7';
         strokeColor = '#22c55e';
         strokeWidth = 2;
-      } else if (type.includes('greenhouse')) {
+      } else if (surface.includes('glass') || type.includes('greenhouse')) {
         fillColor = 'rgba(224, 242, 254, 0.7)';
         strokeColor = '#0288d1';
         strokeWidth = 3;
-      } else if (type.includes('path') || type.includes('walkway')) {
+      } else if (surface.includes('gravel') || type.includes('path') || type.includes('walkway')) {
         fillColor = '#e2e8f0';
         strokeColor = '#94a3b8';
         strokeWidth = 2;
@@ -1886,6 +2157,21 @@
           ctx.lineWidth = 2 / this.zoom;
           ctx.stroke();
         });
+
+        // Edge midpoint handles (click or drag to insert new point)
+        for (let i = 0; i < area.points.length; i++) {
+          const p1 = area.points[i];
+          const p2 = area.points[(i + 1) % area.points.length];
+          const midX = (p1.x + p2.x) / 2;
+          const midY = (p1.y + p2.y) / 2;
+          ctx.beginPath();
+          ctx.arc(midX, midY, 3.5 / this.zoom, 0, Math.PI * 2);
+          ctx.fillStyle = 'rgba(16, 185, 129, 0.85)';
+          ctx.fill();
+          ctx.strokeStyle = '#ffffff';
+          ctx.lineWidth = 1.5 / this.zoom;
+          ctx.stroke();
+        }
       }
 
       // Centroid label
@@ -1915,11 +2201,12 @@
     }
 
     drawAreaTexture2D(ctx, area, type) {
+      const surface = (area.surface_material || '').toLowerCase();
       const bounds = Geometry.polygonBounds(area.points);
       ctx.save();
       ctx.clip();
 
-      if (type.includes('balcony')) {
+      if (surface.includes('wood') || type.includes('balcony')) {
         ctx.strokeStyle = 'rgba(141, 110, 99, 0.2)';
         ctx.lineWidth = 1.5 / this.zoom;
         for (let y = bounds.minY; y <= bounds.maxY; y += 22) {
@@ -1928,7 +2215,7 @@
           ctx.lineTo(bounds.maxX, y);
           ctx.stroke();
         }
-      } else if (type.includes('patio')) {
+      } else if (surface.includes('stone') || type.includes('patio')) {
         ctx.strokeStyle = 'rgba(148, 163, 184, 0.3)';
         ctx.lineWidth = 1.5 / this.zoom;
         for (let x = bounds.minX; x <= bounds.maxX; x += 32) {
@@ -1943,7 +2230,7 @@
           ctx.lineTo(bounds.maxX, y);
           ctx.stroke();
         }
-      } else if (type.includes('lawn')) {
+      } else if (surface.includes('turf') || type.includes('lawn')) {
         ctx.strokeStyle = 'rgba(34, 197, 94, 0.25)';
         ctx.lineWidth = 1 / this.zoom;
         for (let x = bounds.minX + 8; x <= bounds.maxX; x += 20) {
@@ -1952,6 +2239,15 @@
             ctx.moveTo(x, y);
             ctx.lineTo(x + 3, y - 6);
             ctx.stroke();
+          }
+        }
+      } else if (surface.includes('gravel')) {
+        ctx.fillStyle = 'rgba(148, 163, 184, 0.4)';
+        for (let x = bounds.minX + 6; x <= bounds.maxX; x += 16) {
+          for (let y = bounds.minY + 6; y <= bounds.maxY; y += 16) {
+            ctx.beginPath();
+            ctx.arc(x + (Math.sin(x + y) * 4), y + (Math.cos(x + y) * 4), 1.5 / this.zoom, 0, Math.PI * 2);
+            ctx.fill();
           }
         }
       }
@@ -2254,29 +2550,34 @@
         shape.closePath();
 
         const type = (area.area_type || 'balcony').toLowerCase();
+        const surface = (area.surface_material || '').toLowerCase();
         let extrudeDepth = 8;
         let color = 0xd7ccc8;
         let isRaised = false;
+        let isGlass = false;
+        let roughness = 0.85;
 
-        if (type.includes('raised')) {
+        if (surface.includes('wood') || type.includes('raised')) {
           extrudeDepth = 22;
           color = 0x6d4c41; // Rich timber wood
-          isRaised = true;
+          isRaised = type.includes('raised');
+        } else if (surface.includes('stone') || type.includes('patio')) {
+          extrudeDepth = 6;
+          color = 0x94a3b8; // Slate stone pavers
+        } else if (surface.includes('turf') || type.includes('lawn')) {
+          extrudeDepth = 4;
+          color = 0x4ade80;
+        } else if (surface.includes('glass') || type.includes('greenhouse')) {
+          extrudeDepth = 6;
+          color = 0x38bdf8;
+          roughness = 0.15;
+          isGlass = true;
+        } else if (surface.includes('gravel') || type.includes('path') || type.includes('walkway')) {
+          extrudeDepth = 2;
+          color = 0xd1d5db; // Fine gravel/flagstone
         } else if (type.includes('balcony')) {
           extrudeDepth = 10;
           color = 0xd7ccc8;
-        } else if (type.includes('patio')) {
-          extrudeDepth = 6;
-          color = 0x94a3b8; // Slate stone pavers
-        } else if (type.includes('lawn')) {
-          extrudeDepth = 4;
-          color = 0x4ade80;
-        } else if (type.includes('greenhouse')) {
-          extrudeDepth = 6;
-          color = 0x38bdf8;
-        } else if (type.includes('path') || type.includes('walkway')) {
-          extrudeDepth = 2;
-          color = 0xd1d5db; // Fine gravel/flagstone
         } else {
           extrudeDepth = 3;
           color = 0x452f26; // Garden soil/mulch
@@ -2298,8 +2599,10 @@
 
         const mat = new THREE.MeshStandardMaterial({
           color: color,
-          roughness: 0.85,
-          metalness: 0.1
+          roughness: roughness,
+          metalness: isGlass ? 0.2 : 0.1,
+          transparent: isGlass,
+          opacity: isGlass ? 0.75 : 1.0
         });
 
         const mesh = new THREE.Mesh(geom, mat);
@@ -2915,50 +3218,166 @@
 
       panel.innerHTML = `
         <div class="side-panel-header">
-          <div>
-            <div class="side-title">${area.name}</div>
-            <div class="side-sub">${area.area_type.toUpperCase()} GROWING AREA</div>
+          <div style="flex:1;">
+            <input type="text" class="side-title-input" value="${area.name}" 
+                   style="font-size:1.1rem; font-weight:700; width:90%; border:1px solid transparent; border-radius:4px; padding:2px 4px; background:transparent;"
+                   onfocus="this.style.border='1px solid var(--border)'; this.style.background='var(--bg-card)';"
+                   onblur="this.style.border='1px solid transparent'; this.style.background='transparent';"
+                   onchange="window.gardenPlanner.updateAreaProperty('${area.id}', 'name', this.value.trim() || 'Growing Area')">
+            <div class="side-sub">${(area.area_type || 'area').toUpperCase()} • ${(area.surface_material || 'soil').toUpperCase()}</div>
           </div>
           <button class="side-close-btn" onclick="window.gardenPlanner.clearSelection()">✕</button>
         </div>
 
         <div class="side-section">
-          <div class="side-label">ENVIRONMENTAL CONDITIONS</div>
-          <div class="side-meta-row">
-            <span>Sun Exposure:</span>
-            <span style="font-weight:600;">${area.sun_exposure}</span>
-          </div>
-          <div class="side-meta-row">
-            <span>Shelter from Rain:</span>
-            <span class="pill ${area.shelter_from_rain ? 'sheltered' : 'open'}">
-              ${area.shelter_from_rain ? 'Sheltered (Zero Direct Rain)' : 'Open Exposure'}
-            </span>
-          </div>
-          <div class="side-meta-row">
-            <span>Watering Arrangements:</span>
-            <span>${area.watering_arrangements || 'Manual watering'}</span>
+          <div class="side-label">AREA PROPERTIES & CONDITIONS</div>
+          <div style="display:flex; flex-direction:column; gap:0.6rem; margin-top:0.4rem;">
+            <div>
+              <label style="font-size:0.75rem; color:var(--text-muted); display:block; margin-bottom:2px;">Area Type:</label>
+              <select style="width:100%; padding:0.35rem 0.5rem; font-size:0.84rem; border:1px solid var(--border); border-radius:6px; background:var(--bg-card); color:var(--text);"
+                      onchange="window.gardenPlanner.updateAreaProperty('${area.id}', 'area_type', this.value)">
+                <option value="raised bed" ${area.area_type === 'raised bed' ? 'selected' : ''}>Raised Bed (Wood / Masonry)</option>
+                <option value="in-ground" ${area.area_type === 'in-ground' ? 'selected' : ''}>In-ground Bed</option>
+                <option value="balcony" ${area.area_type === 'balcony' ? 'selected' : ''}>Balcony Planters</option>
+                <option value="patio" ${area.area_type === 'patio' ? 'selected' : ''}>Patio Containers</option>
+                <option value="greenhouse" ${area.area_type === 'greenhouse' ? 'selected' : ''}>Greenhouse / Polytunnel</option>
+                <option value="lawn" ${area.area_type === 'lawn' ? 'selected' : ''}>Lawn / Turf Area</option>
+                <option value="pathway" ${area.area_type === 'pathway' ? 'selected' : ''}>Pathway / Walkway</option>
+                <option value="garden bed" ${area.area_type === 'garden bed' ? 'selected' : ''}>General Garden Bed</option>
+              </select>
+            </div>
+
+            <div>
+              <label style="font-size:0.75rem; color:var(--text-muted); display:block; margin-bottom:2px;">Surface Material:</label>
+              <select style="width:100%; padding:0.35rem 0.5rem; font-size:0.84rem; border:1px solid var(--border); border-radius:6px; background:var(--bg-card); color:var(--text);"
+                      onchange="window.gardenPlanner.updateAreaProperty('${area.id}', 'surface_material', this.value)">
+                <option value="soil" ${(!area.surface_material || area.surface_material === 'soil') ? 'selected' : ''}>Garden Soil / Mulch</option>
+                <option value="wood" ${area.surface_material === 'wood' ? 'selected' : ''}>Treated Timber / Wood</option>
+                <option value="stone" ${area.surface_material === 'stone' ? 'selected' : ''}>Stone / Slate Pavers</option>
+                <option value="turf" ${area.surface_material === 'turf' ? 'selected' : ''}>Natural Turf Grass</option>
+                <option value="gravel" ${area.surface_material === 'gravel' ? 'selected' : ''}>Fine Crushed Gravel</option>
+                <option value="glass" ${area.surface_material === 'glass' ? 'selected' : ''}>Glass / Polycarbonate</option>
+              </select>
+            </div>
+
+            <div style="display:flex; gap:0.5rem;">
+              <div style="flex:1;">
+                <label style="font-size:0.75rem; color:var(--text-muted); display:block; margin-bottom:2px;">Sun Exposure:</label>
+                <select style="width:100%; padding:0.35rem 0.5rem; font-size:0.84rem; border:1px solid var(--border); border-radius:6px; background:var(--bg-card); color:var(--text);"
+                        onchange="window.gardenPlanner.updateAreaProperty('${area.id}', 'sun_exposure', this.value)">
+                  <option value="full sun" ${area.sun_exposure === 'full sun' ? 'selected' : ''}>Full Sun</option>
+                  <option value="partial shade" ${area.sun_exposure === 'partial shade' ? 'selected' : ''}>Partial Shade</option>
+                  <option value="full shade" ${area.sun_exposure === 'full shade' ? 'selected' : ''}>Full Shade</option>
+                </select>
+              </div>
+              <div style="flex:1;">
+                <label style="font-size:0.75rem; color:var(--text-muted); display:block; margin-bottom:2px;">Rain Exposure:</label>
+                <select style="width:100%; padding:0.35rem 0.5rem; font-size:0.84rem; border:1px solid var(--border); border-radius:6px; background:var(--bg-card); color:var(--text);"
+                        onchange="window.gardenPlanner.updateAreaProperty('${area.id}', 'shelter_from_rain', this.value === '1')">
+                  <option value="0" ${!area.shelter_from_rain ? 'selected' : ''}>Open Sky</option>
+                  <option value="1" ${area.shelter_from_rain ? 'selected' : ''}>Sheltered</option>
+                </select>
+              </div>
+            </div>
+
+            <div>
+              <label style="font-size:0.75rem; color:var(--text-muted); display:block; margin-bottom:2px;">Watering Arrangements:</label>
+              <input type="text" value="${area.watering_arrangements || ''}" placeholder="e.g. Drip irrigation, manual hose..."
+                     style="width:100%; padding:0.35rem 0.5rem; font-size:0.84rem; border:1px solid var(--border); border-radius:6px; background:var(--bg-card); color:var(--text);"
+                     onchange="window.gardenPlanner.updateAreaProperty('${area.id}', 'watering_arrangements', this.value)">
+            </div>
+
+            <div>
+              <label style="font-size:0.75rem; color:var(--text-muted); display:block; margin-bottom:2px;">Area Notes:</label>
+              <textarea rows="2" placeholder="Soil amendments, drainage notes, dimensions..."
+                        style="width:100%; padding:0.35rem 0.5rem; font-size:0.84rem; border:1px solid var(--border); border-radius:6px; background:var(--bg-card); color:var(--text); resize:vertical;"
+                        onchange="window.gardenPlanner.updateAreaProperty('${area.id}', 'notes', this.value)">${area.notes || ''}</textarea>
+            </div>
           </div>
         </div>
 
         <div class="side-section">
           <div class="side-label">PLANTS IN THIS AREA (${areaPlants.length})</div>
-          <div style="display:flex; flex-direction:column; gap:0.4rem; margin-top:0.4rem;">
-            ${areaPlants.map(p => `
-              <div class="lib-plant-card" style="padding:0.4rem 0.6rem; cursor:pointer;" onclick="window.gardenPlanner.selectPlant('${p.id}')">
-                <span style="font-size:1.1rem;">${this.getPlantTypeEmoji(this.inferPlantType(p.name, p.species))}</span>
-                <span style="font-weight:600; font-size:0.86rem; flex:1;">${p.name}</span>
-                <span class="material-symbols-outlined" style="font-size:1rem; color:${p.condition ? p.condition.color : '#22c55e'};">${p.condition ? p.condition.icon : 'spa'}</span>
-              </div>
-            `).join('')}
-          </div>
+          ${areaPlants.length === 0 ? `
+            <div style="font-size:0.82rem; color:var(--text-muted); padding:0.5rem 0; font-style:italic;">No plants placed here yet. Drag plants from the Library drawer into this area.</div>
+          ` : `
+            <div style="display:flex; flex-direction:column; gap:0.4rem; margin-top:0.4rem; max-height:160px; overflow-y:auto;">
+              ${areaPlants.map(p => `
+                <div class="lib-plant-card" style="padding:0.4rem 0.6rem; cursor:pointer;" onclick="window.gardenPlanner.selectPlant('${p.id}')">
+                  <span style="font-size:1.1rem;">${this.getPlantTypeEmoji(this.inferPlantType(p.name, p.species))}</span>
+                  <span style="font-weight:600; font-size:0.86rem; flex:1;">${p.name}</span>
+                  <span class="material-symbols-outlined" style="font-size:1rem; color:${p.condition ? p.condition.color : '#22c55e'};">${p.condition ? p.condition.icon : 'spa'}</span>
+                </div>
+              `).join('')}
+            </div>
+          `}
         </div>
 
-        <div class="side-section" style="margin-top:1.5rem;">
-          <button class="btn btn-danger-outline" style="width:100%; font-size:0.8rem;" onclick="window.gardenPlanner.deleteArea('${area.id}')">
-            Delete Growing Area
+        <div class="side-section" style="margin-top:1.2rem; display:flex; flex-direction:column; gap:0.5rem;">
+          <button class="btn btn-outline" style="width:100%; font-size:0.84rem;" onclick="window.gardenPlanner.duplicateArea('${area.id}')">
+            <span class="material-symbols-outlined" style="font-size:1rem; vertical-align:middle;">content_copy</span> Duplicate Area
+          </button>
+          <button class="btn btn-danger-outline" style="width:100%; font-size:0.84rem;" onclick="window.gardenPlanner.deleteArea('${area.id}')">
+            <span class="material-symbols-outlined" style="font-size:1rem; vertical-align:middle;">delete</span> Delete Growing Area
           </button>
         </div>
       `;
+    }
+
+    async duplicateArea(areaId) {
+      const orig = this.growingAreas.find(a => a.id === areaId);
+      const layoutArea = this.layout.areas.find(a => a.id === areaId);
+      if (!orig || !layoutArea) return;
+
+      const offset = 40;
+      const newPoints = layoutArea.points.map(p => ({ x: p.x + offset, y: p.y + offset }));
+      this.pendingAreaMeta = {
+        name: `${orig.name} (Copy)`,
+        area_type: orig.area_type,
+        surface_material: orig.surface_material || '',
+        sun_exposure: orig.sun_exposure,
+        shelter_from_rain: orig.shelter_from_rain,
+        watering_arrangements: orig.watering_arrangements || '',
+        notes: orig.notes || ''
+      };
+
+      await this.commitNewDrawnArea(newPoints, layoutArea.shape_type || 'polygon');
+    }
+
+    async updateAreaProperty(areaId, prop, value) {
+      const area = this.growingAreas.find(a => a.id === areaId);
+      const layoutArea = this.layout.areas.find(a => a.id === areaId);
+      if (!area) return;
+
+      this.pushUndo();
+      area[prop] = value;
+      if (layoutArea) {
+        if (prop === 'name') layoutArea.name = value;
+        if (prop === 'area_type') layoutArea.area_type = value;
+        if (prop === 'surface_material') layoutArea.surface_material = value;
+      }
+
+      try {
+        await fetch('/api/areas', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: area.name,
+            area_type: area.area_type,
+            surface_material: area.surface_material || '',
+            sun_exposure: area.sun_exposure,
+            shelter_from_rain: area.shelter_from_rain,
+            watering_arrangements: area.watering_arrangements || '',
+            notes: area.notes || ''
+          })
+        });
+      } catch (e) {
+        console.warn("Could not sync property update to API:", e);
+      }
+
+      this.scheduleSave();
+      this.renderAll();
+      this.populateAreaFilter();
     }
 
     updatePlantScale(plantId, newScale) {
@@ -3091,18 +3510,48 @@
     }
 
     async deleteArea(areaId) {
-      if (!confirm("Are you sure you want to delete this growing area? Plants in this area will need to be reassigned.")) return;
+      const area = this.growingAreas.find(a => a.id === areaId);
+      const areaName = area ? area.name : 'this growing area';
+      const assignedPlants = this.plants.filter(p => p.area_id === areaId);
+
+      let retainPlants = true;
+      if (assignedPlants.length > 0) {
+        const confirmed = confirm(
+          `"${areaName}" currently contains ${assignedPlants.length} plant(s).\n\nKeep these plants as unplaced plants in your library? (OK = Keep as Unplaced, Cancel = Abort Deletion)`
+        );
+        if (!confirmed) return;
+      } else {
+        if (!confirm(`Are you sure you want to delete "${areaName}"?`)) return;
+      }
+
       this.pushUndo();
       try {
-        await fetch(`/api/areas/${areaId}`, { method: 'DELETE' });
+        await fetch(`/api/areas/${areaId}?retain_plants=true`, { method: 'DELETE' });
+
+        // Update assigned plants to be unplaced (area_id = '')
+        this.plants.forEach(p => {
+          if (p.area_id === areaId) {
+            p.area_id = '';
+            p.area_name = 'Unplaced';
+          }
+        });
+        this.layout.plants.forEach(p => {
+          if (p.area_id === areaId) {
+            p.area_id = '';
+          }
+        });
+
         this.growingAreas = this.growingAreas.filter(a => a.id !== areaId);
         this.layout.areas = this.layout.areas.filter(a => a.id !== areaId);
+
         this.clearSelection();
         this.scheduleSave();
         this.renderAll();
-        this.showToast("Growing area deleted.");
+        this.populateAreaFilter();
+        this.showToast(`Deleted "${areaName}". Plants kept in library.`);
       } catch (err) {
         console.error("Delete area failed:", err);
+        this.showToast("Failed to delete area.");
       }
     }
 
@@ -3160,37 +3609,56 @@
       this.activeMode = mode;
       const btnExplore = document.getElementById('btn-mode-explore');
       const btnEdit = document.getElementById('btn-mode-edit');
+      const toolbar = document.getElementById('canvas-drawing-toolbar');
 
       if (mode === 'explore') {
         if (btnExplore) btnExplore.classList.add('active');
         if (btnEdit) btnEdit.classList.remove('active');
+        if (toolbar) toolbar.classList.add('explore-mode');
+        this.cancelDrawing();
         this.setTool('select');
       } else {
         if (btnExplore) btnExplore.classList.remove('active');
         if (btnEdit) btnEdit.classList.add('active');
+        if (toolbar) toolbar.classList.remove('explore-mode');
       }
       this.renderCanvas2D();
     }
 
     setTool(tool) {
+      if (tool !== 'select' && this.activeMode === 'explore') {
+        this.setMode('edit');
+      }
+
       this.activeTool = tool;
       document.querySelectorAll('.btn-tool').forEach(b => b.classList.remove('active'));
       const activeBtn = document.getElementById(`btn-tool-${tool}`);
       if (activeBtn) activeBtn.classList.add('active');
 
-      const polyControls = document.getElementById('polygon-drawing-controls');
-      if (polyControls) {
-        polyControls.style.display = tool === 'polygon' ? 'flex' : 'none';
-        const vertexCounter = document.getElementById('poly-point-count');
-        if (vertexCounter) vertexCounter.textContent = '0';
-      }
       if (tool !== 'polygon') {
         this.polygonPoints = [];
       }
 
       if (tool !== 'select') {
         this.clearSelection();
+        if (!this.pendingAreaMeta) {
+          const count = this.growingAreas.length + 1;
+          const defaultType = tool === 'rect' ? 'raised bed' : (tool === 'polygon' ? 'lawn' : 'garden bed');
+          const defaultSurface = tool === 'rect' ? 'wood' : (tool === 'polygon' ? 'turf' : 'soil');
+          this.pendingAreaMeta = {
+            name: `Growing Area ${count}`,
+            area_type: defaultType,
+            surface_material: defaultSurface,
+            sun_exposure: 'full sun',
+            shelter_from_rain: false,
+            watering_arrangements: '',
+            notes: '',
+            drawing_method: tool
+          };
+        }
       }
+
+      this.updateDrawingBanner();
       this.renderCanvas2D();
     }
 
@@ -3296,6 +3764,9 @@
       bind('btn-load-example', () => this.loadExampleGarden());
       bind('btn-finish-polygon', () => this.finishPolygonArea());
       bind('btn-cancel-polygon', () => this.cancelPolygon());
+      bind('btn-banner-finish', () => this.finishPolygonArea());
+      bind('btn-banner-undo-pt', () => this.undoPolygonPoint());
+      bind('btn-banner-cancel', () => this.cancelDrawing());
 
       const gardenSelect = document.getElementById('select-active-garden');
       if (gardenSelect) {
@@ -3323,13 +3794,7 @@
       bind('btn-rotate-left', () => this.rotate3D(-45));
       bind('btn-rotate-right', () => this.rotate3D(45));
 
-      bind('btn-add-area-dialog', () => {
-        const defaultShape = [
-          { x: 100, y: 100 }, { x: 380, y: 100 },
-          { x: 380, y: 320 }, { x: 100, y: 320 }
-        ];
-        this.openAreaModalWithPoints(defaultShape, 'rectangle');
-      });
+      bind('btn-add-area-dialog', () => this.openAddAreaDialog());
 
       bind('btn-toggle-library', () => {
         const lib = document.getElementById('garden-library-drawer');
@@ -3370,14 +3835,25 @@
         } else if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || e.key === 'Y')) {
           e.preventDefault();
           this.redo();
+        } else if (e.key === 'v' || e.key === 'V' || e.key === 's' || e.key === 'S') {
+          this.setTool('select');
+        } else if (e.key === 'f' || e.key === 'F') {
+          this.setTool('freehand');
+        } else if (e.key === 'r' || e.key === 'R') {
+          this.setTool('rect');
+        } else if (e.key === 'p' || e.key === 'P') {
+          this.setTool('polygon');
         } else if (e.key === 'Delete' || e.key === 'Backspace') {
-          if (this.selectedPlantId || this.selectedAreaId) {
+          if (this.activeTool === 'polygon' && this.polygonPoints.length > 0) {
+            e.preventDefault();
+            this.undoPolygonPoint();
+          } else if (this.selectedPlantId || this.selectedAreaId) {
             e.preventDefault();
             this.deleteSelected();
           }
         } else if (e.key === 'Escape') {
-          if (this.activeTool === 'polygon') {
-            this.cancelPolygon();
+          if (this.isDrawing || (this.polygonPoints && this.polygonPoints.length > 0) || this.pendingAreaMeta) {
+            this.cancelDrawing();
           } else {
             this.clearSelection();
           }

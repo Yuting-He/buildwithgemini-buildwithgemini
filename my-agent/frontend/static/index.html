@@ -945,6 +945,56 @@
     background: #cbd5e1;
     margin: 4px 2px;
   }
+  .canvas-toolbar.explore-mode .tool-2d-only {
+    opacity: 0.35;
+    pointer-events: none;
+    filter: grayscale(0.8);
+  }
+
+  .drawing-method-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 8px;
+    margin-top: 6px;
+  }
+  .drawing-method-card {
+    border: 2px solid var(--border);
+    border-radius: 8px;
+    padding: 10px 8px;
+    text-align: center;
+    cursor: pointer;
+    background: #ffffff;
+    transition: all 0.15s ease;
+    user-select: none;
+  }
+  .drawing-method-card:hover {
+    border-color: var(--accent);
+    background: #f0fdf4;
+  }
+  .drawing-method-card.active {
+    border-color: var(--accent);
+    background: #ecfdf5;
+    box-shadow: 0 0 0 1px var(--accent);
+  }
+  .drawing-method-card .method-icon {
+    font-size: 24px;
+    color: var(--accent);
+    margin-bottom: 4px;
+    display: block;
+  }
+  .drawing-method-card .method-title {
+    font-size: 0.82rem;
+    font-weight: 600;
+    color: var(--text);
+    display: block;
+  }
+  .drawing-method-card .method-desc {
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    margin-top: 2px;
+    line-height: 1.2;
+    display: block;
+  }
 
   .canvas-nav-controls {
     position: absolute;
@@ -1377,32 +1427,44 @@
 
       <!-- Center Canvas Viewport -->
       <div id="garden-canvas-container">
-        <!-- Floating Polygon Controls (active during polygon drawing) -->
-        <div id="polygon-drawing-controls" style="display: none; position: absolute; top: 1rem; left: 50%; transform: translateX(-50%); z-index: 35; background: rgba(255, 255, 255, 0.95); backdrop-filter: blur(8px); padding: 0.4rem 0.9rem; border-radius: 30px; box-shadow: 0 4px 18px rgba(0, 0, 0, 0.16); border: 1px solid var(--border); align-items: center; gap: 0.75rem; font-size: 0.84rem;">
-          <span style="color: var(--text-main); font-weight: 500; display: inline-flex; align-items: center; gap: 0.3rem;">
-            <span class="material-symbols-outlined" style="font-size: 1.05rem; color: var(--accent);">polyline</span>
-            <span>Click canvas to add vertices (<strong id="poly-point-count">0</strong> pts)</span>
+        <!-- Contextual Drawing Guidance Banner -->
+        <div id="canvas-drawing-banner" style="display: none; position: absolute; top: 12px; left: 50%; transform: translateX(-50%); z-index: 35; background: rgba(255, 255, 255, 0.96); backdrop-filter: blur(10px); padding: 0.45rem 1.1rem; border-radius: 30px; box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15); border: 1px solid var(--border); align-items: center; gap: 0.85rem; font-size: 0.85rem;">
+          <span id="drawing-banner-status" style="color: var(--text-main); font-weight: 500; display: inline-flex; align-items: center; gap: 0.4rem;">
+            <span class="material-symbols-outlined" id="drawing-banner-icon" style="font-size: 1.15rem; color: var(--accent);">gesture</span>
+            <span id="drawing-banner-text">Drag pointer on canvas to outline area</span>
           </span>
-          <button id="btn-finish-polygon" class="btn" style="padding: 0.25rem 0.75rem; font-size: 0.8rem; background: var(--accent);">
-            <span class="material-symbols-outlined" style="font-size: 0.95rem;">check</span> Finish Shape
-          </button>
-          <button id="btn-cancel-polygon" class="btn btn-outline" style="padding: 0.25rem 0.65rem; font-size: 0.8rem;">
-            <span class="material-symbols-outlined" style="font-size: 0.95rem;">close</span> Cancel
-          </button>
+          <div style="display: flex; align-items: center; gap: 0.4rem;">
+            <button id="btn-banner-finish" class="btn" style="padding: 0.25rem 0.75rem; font-size: 0.8rem; background: var(--accent); display: none;">
+              <span class="material-symbols-outlined" style="font-size: 0.95rem;">check</span> Finish Shape
+            </button>
+            <button id="btn-banner-undo-pt" class="btn btn-outline" style="padding: 0.25rem 0.65rem; font-size: 0.8rem; display: none;" title="Remove last point (Backspace)">
+              <span class="material-symbols-outlined" style="font-size: 0.95rem;">undo</span> Remove Point
+            </button>
+            <button id="btn-banner-cancel" class="btn btn-outline" style="padding: 0.25rem 0.65rem; font-size: 0.8rem;" title="Cancel drawing (Esc)">
+              <span class="material-symbols-outlined" style="font-size: 0.95rem;">close</span> Cancel
+            </button>
+          </div>
+        </div>
+
+        <!-- Hidden legacy compatibility hooks for polygon controls -->
+        <div id="polygon-drawing-controls" style="display: none;">
+          <span id="poly-point-count">0</span>
+          <button id="btn-finish-polygon"></button>
+          <button id="btn-cancel-polygon"></button>
         </div>
 
         <!-- 2D Canvas Toolbar -->
-        <div class="canvas-toolbar">
-          <button id="btn-tool-select" class="btn-tool active" title="Select and Move (S)">
+        <div class="canvas-toolbar" id="canvas-drawing-toolbar">
+          <button id="btn-tool-select" class="btn-tool active" title="Select and Move (V / S)">
             <span class="material-symbols-outlined" style="font-size:1.1rem;">pan_tool</span>
           </button>
-          <button id="btn-tool-freehand" class="btn-tool tool-2d-only" title="Freehand Outline with Curve Smoothing">
+          <button id="btn-tool-freehand" class="btn-tool tool-2d-only" title="Freehand Outline with Curve Smoothing (F)">
             <span class="material-symbols-outlined" style="font-size:1.1rem;">gesture</span>
           </button>
-          <button id="btn-tool-rect" class="btn-tool tool-2d-only" title="Draw Rectangle Area">
+          <button id="btn-tool-rect" class="btn-tool tool-2d-only" title="Draw Rectangle Area (R)">
             <span class="material-symbols-outlined" style="font-size:1.1rem;">crop_square</span>
           </button>
-          <button id="btn-tool-polygon" class="btn-tool tool-2d-only" title="Draw Multi-point Polygon Area">
+          <button id="btn-tool-polygon" class="btn-tool tool-2d-only" title="Draw Multi-point Polygon Area (P)">
             <span class="material-symbols-outlined" style="font-size:1.1rem;">polyline</span>
           </button>
 
@@ -1595,50 +1657,103 @@
 
 <!-- Area Creation Modal -->
 <div id="modal-area-create" class="modal-overlay">
-  <div class="modal-dialog">
+  <div class="modal-dialog" style="max-width: 520px;">
     <div class="modal-header">
-      <h3 style="margin:0; font-size:1.05rem;">Define Growing Area</h3>
+      <div style="display:flex; align-items:center; gap:0.5rem;">
+        <span class="material-symbols-outlined" style="color:var(--accent);">add_box</span>
+        <h3 style="margin:0; font-size:1.08rem; font-weight:600;">Add Growing Area</h3>
+      </div>
       <button class="side-close-btn" onclick="window.gardenPlanner.closeAreaModal()">✕</button>
     </div>
     <div class="modal-body">
       <div class="form-group">
-        <label>Area Name</label>
-        <input id="area-form-name" placeholder="e.g. South Terrace, Front Raised Bed">
+        <label style="font-weight:600; font-size:0.85rem;">Area Name</label>
+        <input id="area-form-name" placeholder="e.g. Raised Veggie Bed, South Patio, Herb Corner" required>
       </div>
-      <div class="form-group">
-        <label>Area Type</label>
-        <select id="area-form-type">
-          <option value="raised bed">Raised Bed (Wood/Timber framing)</option>
-          <option value="balcony">Balcony / Deck (Plank decking)</option>
-          <option value="patio">Patio (Stone pavers)</option>
-          <option value="lawn">Lawn Border (Turf & soil)</option>
-          <option value="greenhouse">Greenhouse / Cold Frame</option>
-          <option value="in-ground">In-Ground Garden Bed</option>
-        </select>
+
+      <div style="display:grid; grid-template-columns: 1fr 1fr; gap:12px;">
+        <div class="form-group">
+          <label style="font-weight:600; font-size:0.85rem;">Area Type</label>
+          <select id="area-form-type" onchange="window.gardenPlanner.handleAreaTypeChange(this.value)">
+            <option value="garden bed">Garden Bed (In-ground soil)</option>
+            <option value="raised bed">Raised Bed (Framed timber)</option>
+            <option value="lawn">Lawn (Turf & grass border)</option>
+            <option value="patio">Patio (Stone pavers / tiles)</option>
+            <option value="balcony">Balcony / Deck (Timber decking)</option>
+            <option value="greenhouse">Greenhouse / Cold Frame</option>
+            <option value="path">Path / Walkway</option>
+            <option value="container zone">Container Zone</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label style="font-weight:600; font-size:0.85rem;">Surface Material</label>
+          <select id="area-form-surface">
+            <option value="soil">Rich Garden Soil / Mulch</option>
+            <option value="wood">Timber Wood / Decking</option>
+            <option value="stone">Stone Pavers / Flagstone</option>
+            <option value="turf">Lush Green Turf</option>
+            <option value="gravel">Fine Gravel / Pebbles</option>
+            <option value="glass">Glass / Acrylic Roof</option>
+          </select>
+        </div>
       </div>
+
       <div class="form-group">
-        <label>Sun Exposure</label>
-        <select id="area-form-sun">
-          <option value="full sun">Full Sun (6+ hours direct light)</option>
-          <option value="partial sun">Partial Sun / Partial Shade (3-6 hours)</option>
-          <option value="full shade">Full Shade (Deep indirect light)</option>
-        </select>
+        <label style="font-weight:600; font-size:0.85rem; margin-bottom: 2px;">Drawing Method</label>
+        <div class="drawing-method-grid">
+          <div class="drawing-method-card active" data-method="freehand" onclick="window.gardenPlanner.selectDrawingMethod('freehand')">
+            <span class="material-symbols-outlined method-icon">gesture</span>
+            <span class="method-title">Freehand</span>
+            <span class="method-desc">Draw curved shape with auto-smoothing</span>
+          </div>
+          <div class="drawing-method-card" data-method="rect" onclick="window.gardenPlanner.selectDrawingMethod('rect')">
+            <span class="material-symbols-outlined method-icon">crop_square</span>
+            <span class="method-title">Rectangle</span>
+            <span class="method-desc">Drag corners for box beds & patios</span>
+          </div>
+          <div class="drawing-method-card" data-method="polygon" onclick="window.gardenPlanner.selectDrawingMethod('polygon')">
+            <span class="material-symbols-outlined method-icon">polyline</span>
+            <span class="method-title">Polygon</span>
+            <span class="method-desc">Click point-by-point for custom plots</span>
+          </div>
+        </div>
+        <input type="hidden" id="area-form-method" value="freehand">
       </div>
-      <div class="form-group">
-        <label>Rain Exposure / Micro-Climate</label>
-        <select id="area-form-shelter">
-          <option value="0">Open to Sky (Receives natural rainfall)</option>
-          <option value="1">Sheltered by Overhang/Awning (Zero direct rain)</option>
-        </select>
+
+      <div style="display:grid; grid-template-columns: 1fr 1fr; gap:12px;">
+        <div class="form-group">
+          <label style="font-weight:600; font-size:0.85rem;">Sun Exposure</label>
+          <select id="area-form-sun">
+            <option value="full sun">Full Sun (6+ hrs direct sun)</option>
+            <option value="partial sun">Partial Sun / Shade (3-6 hrs)</option>
+            <option value="full shade">Full Shade (Deep shade)</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label style="font-weight:600; font-size:0.85rem;">Rain Exposure</label>
+          <select id="area-form-shelter">
+            <option value="0">Open Sky (Natural rainfall)</option>
+            <option value="1">Sheltered (Under roof / zero rain)</option>
+          </select>
+        </div>
       </div>
+
       <div class="form-group">
-        <label>Watering Arrangement</label>
-        <input id="area-form-watering" placeholder="e.g. Manual watering can, drip irrigation">
+        <label style="font-weight:600; font-size:0.85rem;">Watering Arrangements</label>
+        <input id="area-form-watering" placeholder="e.g. Drip emitter line, manual watering can, soaker hose">
+      </div>
+
+      <div class="form-group" style="margin-bottom:0;">
+        <label style="font-weight:600; font-size:0.85rem;">Notes (Optional)</label>
+        <textarea id="area-form-notes" rows="2" placeholder="e.g. Sheltered from strong winds, rich compost added..." style="width:100%; box-sizing:border-box; padding:0.45rem 0.6rem; border:1px solid var(--border); border-radius:6px; font-size:0.82rem; resize:vertical;"></textarea>
       </div>
     </div>
-    <div class="modal-footer">
+    <div class="modal-footer" style="display:flex; justify-content:space-between; align-items:center;">
       <button class="btn btn-outline" onclick="window.gardenPlanner.closeAreaModal()">Cancel</button>
-      <button class="btn" onclick="window.gardenPlanner.submitNewArea()">Save Growing Area</button>
+      <button id="btn-confirm-area-create" class="btn" onclick="window.gardenPlanner.confirmAddAreaModal()" style="display:inline-flex; align-items:center; gap:0.4rem;">
+        <span class="material-symbols-outlined" style="font-size:1.05rem;">edit</span>
+        <span>Start Drawing on Canvas</span>
+      </button>
     </div>
   </div>
 </div>
